@@ -279,6 +279,11 @@ services:
       - GATEWAY_VALIDATION_TIMEOUT=5
       # Max concurrent health checks per worker (default: 10)
       - MAX_CONCURRENT_HEALTH_CHECKS=10
+      # Auto-refresh tools/resources/prompts from MCP servers during health checks
+      # SSE gateways use polling only; StreamableHTTP gateways with session pooling
+      # also receive push notifications via notifications/tools/list_changed
+      - AUTO_REFRESH_SERVERS=true
+      - GATEWAY_AUTO_REFRESH_INTERVAL=300
       # JWT Configuration - Choose ONE approach:
       # Option 1: HMAC (Default - Simple deployments)
       - JWT_ALGORITHM=HS256
