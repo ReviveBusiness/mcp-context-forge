@@ -1663,11 +1663,18 @@ class Settings(BaseSettings):
 
     # Auto-refresh tools/resources/prompts from gateways during health checks
     # When enabled, tools/resources/prompts are fetched and synced with DB during health checks
-    auto_refresh_servers: bool = Field(default=False, description="Enable automatic tool/resource/prompt refresh during gateway health checks")
+    auto_refresh_servers: bool = Field(default=True, description="Enable automatic tool/resource/prompt refresh during gateway health checks")
 
     # Per-gateway refresh configuration (used when auto_refresh_servers is True)
     # Gateways can override this with their own refresh_interval_seconds
-    gateway_auto_refresh_interval: int = Field(default=300, ge=60, description="Default refresh interval in seconds for gateway tools/resources/prompts sync (minimum 60 seconds)")
+    gateway_auto_refresh_interval: int = Field(default=60, ge=60, description="Default refresh interval in seconds for gateway tools/resources/prompts sync (minimum 60 seconds)")
+
+    # Hot/Cold Server Classification (staggered polling optimization)
+    # Classify servers by usage (hot = active sessions, cold = inactive) for optimized polling
+    hot_cold_classification_enabled: bool = Field(default=True, description="Enable hot/cold server classification for staggered polling (requires Redis for multi-worker)")
+    hot_server_check_interval: float = Field(default=60, ge=60.0, description="Polling interval (seconds) for hot servers (health + tool discovery)")
+    cold_server_check_interval: float = Field(default=60, ge=60.0, description="Polling interval (seconds) for cold servers (health + tool discovery)")
+    server_classification_refresh_interval: float = Field(default=60.0, ge=30.0, description="How often (seconds) to re-classify hot/cold servers based on session usage")
 
     # Validation Gateway URL
     gateway_validation_timeout: int = 5  # seconds

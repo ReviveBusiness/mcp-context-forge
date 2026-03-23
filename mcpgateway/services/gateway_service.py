@@ -422,6 +422,8 @@ class GatewayService(BaseService):  # pylint: disable=too-many-instance-attribut
         self._active_gateways: Set[str] = set()  # Track active gateway URLs
         self._stream_response = None
         self._pending_responses = {}
+        # Hot/cold server classification service (initialized in initialize())
+        self._classification_service: Optional[Any] = None
         # Prefer using the globally-initialized singletons from the service modules
         # so events propagate via their initialized EventService/Redis clients.
         # Import lazily and fall back to creating local instances when the module-level
@@ -592,6 +594,15 @@ class GatewayService(BaseService):  # pylint: disable=too-many-instance-attribut
             # Always create the health check task in filelock mode; leader check is handled inside.
             self._health_check_task = asyncio.create_task(self._run_health_checks(user_email))
 
+        # Initialize hot/cold classification service (if enabled)
+        if settings.hot_cold_classification_enabled:
+            # First-Party
+            from mcpgateway.services.server_classification_service import ServerClassificationService
+
+            self._classification_service = ServerClassificationService(redis_client=self._redis_client)
+            await self._classification_service.start()
+            logger.info("Hot/cold classification service initialized")
+
     async def shutdown(self) -> None:
         """Shutdown the service.
 
@@ -614,6 +625,11 @@ class GatewayService(BaseService):  # pylint: disable=too-many-instance-attribut
                 await self._health_check_task
             except asyncio.CancelledError:
                 pass
+
+        # Stop classification service
+        if self._classification_service:
+            await self._classification_service.stop()
+            logger.info("Classification service stopped")
 
         # Cancel leader heartbeat task if running
         if getattr(self, "_leader_heartbeat_task", None):
@@ -3333,6 +3349,13 @@ class GatewayService(BaseService):  # pylint: disable=too-many-instance-attribut
         # Sanitize URL for logging/telemetry (redacts sensitive query params)
         gateway_url_sanitized = sanitize_url_for_logging(gateway_url, auth_query_params_decrypted)
 
+        # Hot/cold classification: Check if this server should be health-checked now
+        if self._classification_service:
+            should_check = await self._classification_service.should_poll_server(gateway_url, "health")
+            if not should_check:
+                logger.debug(f"Skipping health check for {SecurityValidator.sanitize_log_message(gateway_name)}: " f"not yet due based on hot/cold classification")
+                return
+
         # Create span for individual gateway health check
         with create_span(
             "gateway.health_check",
@@ -3529,7 +3552,17 @@ class GatewayService(BaseService):  # pylint: disable=too-many-instance-attribut
                         logger.warning(f"Failed to update last_seen for gateway {gateway_name}: {update_error}")
 
                     # Auto-refresh tools/resources/prompts if enabled
+                    should_auto_refresh = False
                     if settings.auto_refresh_servers:
+                        # Hot/cold classification: Check if this server should have tools refreshed now
+                        if self._classification_service:
+                            should_auto_refresh = await self._classification_service.should_poll_server(gateway_url, "tools")
+                            if not should_auto_refresh:
+                                logger.debug(f"Skipping auto-refresh for {SecurityValidator.sanitize_log_message(gateway_name)}: " f"not yet due based on hot/cold classification")
+                        else:
+                            should_auto_refresh = True
+
+                    if should_auto_refresh:
                         try:
                             # Throttling: Check if refresh is needed based on last_refresh_at
                             refresh_needed = True
