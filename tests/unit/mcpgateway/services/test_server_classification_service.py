@@ -935,3 +935,222 @@ class TestIntegrationWithGatewayService:
             should_check = await service.should_poll_server("http://test:8080", "health")
 
             assert should_check is False
+
+
+class TestErrorHandling:
+    """Tests for error handling in ServerClassificationService."""
+
+    @pytest.mark.asyncio
+    async def test_classification_loop_handles_no_leader(self):
+        """Test classification loop skips when not leader."""
+        mock_redis = AsyncMock()
+        service = ServerClassificationService(redis_client=mock_redis)
+        service._running = True
+
+        with patch.object(service, "_try_acquire_leader_lock", AsyncMock(return_value=False)):
+            with patch.object(service, "_perform_classification", AsyncMock()) as mock_perform:
+                # Run one iteration
+                service._running = False  # Stop after one iteration
+
+                # Start loop - it should exit without performing classification
+                with patch("mcpgateway.services.server_classification_service.settings") as mock_settings:
+                    mock_settings.gateway_auto_refresh_interval = 0.1
+                    try:
+                        await asyncio.wait_for(service._run_classification_loop(), timeout=0.5)
+                    except asyncio.TimeoutError:
+                        pass
+
+                # Classification should not have been performed
+                mock_perform.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_classification_loop_handles_general_error(self):
+        """Test classification loop continues after general error."""
+        mock_redis = AsyncMock()
+        service = ServerClassificationService(redis_client=mock_redis)
+        service._running = True
+
+        call_count = 0
+
+        async def mock_acquire():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise Exception("Unexpected error")
+            return False  # Not leader on subsequent calls
+
+        # Override error backoff to avoid 30s delay in tests
+        service._error_backoff_seconds = 0.001
+
+        with patch.object(service, "_try_acquire_leader_lock", side_effect=mock_acquire):
+            with patch("mcpgateway.services.server_classification_service.settings") as mock_settings:
+                mock_settings.gateway_auto_refresh_interval = 0.05
+
+                # Start loop
+                task = asyncio.create_task(service._run_classification_loop())
+
+                # Wait long enough for error to occur and loop to continue
+                await asyncio.sleep(0.3)
+
+                service._running = False
+                await asyncio.sleep(0.15)
+                task.cancel()
+
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+                # Verify loop continued after error (call_count > 1)
+                assert call_count >= 2
+
+    @pytest.mark.asyncio
+    async def test_perform_classification_handles_no_gateways(self):
+        """Test _perform_classification handles no gateways gracefully."""
+        mock_redis = AsyncMock()
+
+        service = ServerClassificationService(redis_client=mock_redis)
+
+        # _get_all_gateway_urls is a method on the service instance
+        with patch.object(service, "_get_all_gateway_urls", AsyncMock(return_value=[])):
+            # get_mcp_session_pool is imported lazily inside _perform_classification
+            with patch("mcpgateway.services.mcp_session_pool.get_mcp_session_pool", return_value=MagicMock()):
+                # Should return early without error
+                await service._perform_classification()
+
+                # Redis should not be called (no classification to publish)
+                mock_redis.pipeline.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_extract_metrics_handles_missing_url_in_active(self):
+        """Test metric extraction handles missing URLs in active dict."""
+        from collections import defaultdict
+
+        mock_pool = MagicMock()
+        mock_pool._idle = defaultdict(lambda: deque())  # Empty idle queue
+        mock_pool._active = {
+            ("user@example.com", "http://test:8080"): set([MagicMock()]),
+            ("user@example.com", "http://unknown:8080"): set([MagicMock()]),
+        }
+
+        service = ServerClassificationService(redis_client=None)
+
+        # Should not raise error when processing active sessions with unknown URLs
+        result = service._classify_servers_from_pool(
+            pool=mock_pool,
+            all_gateway_urls=["http://test:8080"]  # Only one URL in all_gateway_urls
+        )
+
+        # Should complete without error
+        assert result is not None
+
+    @pytest.mark.asyncio
+    async def test_extract_metrics_handles_session_attribute_error(self):
+        """Test metric extraction handles sessions with missing attributes."""
+        mock_session = MagicMock()
+        # Remove use_count attribute to trigger AttributeError path
+        del mock_session.use_count
+        mock_session.last_used = time.time()
+
+        mock_pool = MagicMock()
+        mock_pool._idle = {
+            ("user@example.com", "http://test:8080"): deque([mock_session])
+        }
+        mock_pool._active = {}
+
+        service = ServerClassificationService(redis_client=None)
+
+        # Should handle missing use_count attribute gracefully
+        result = service._classify_servers_from_pool(
+            pool=mock_pool,
+            all_gateway_urls=["http://test:8080"]
+        )
+
+        # Should complete without error
+        assert result is not None
+        assert "http://test:8080" in result.hot_servers or "http://test:8080" in result.cold_servers
+
+    @pytest.mark.asyncio
+    async def test_publish_classification_handles_redis_error(self):
+        """Test _publish_classification_to_redis handles Redis errors."""
+        mock_redis = AsyncMock()
+        mock_pipeline = AsyncMock()
+        mock_pipeline.execute = AsyncMock(side_effect=Exception("Redis error"))
+        mock_redis.pipeline.return_value.__aenter__.return_value = mock_pipeline
+
+        service = ServerClassificationService(redis_client=mock_redis)
+
+        metadata = ClassificationMetadata(
+            total_servers=2,
+            hot_cap=1,
+            hot_actual=1,
+            eligible_count=2,
+            timestamp=time.time()
+        )
+        result = ClassificationResult(
+            hot_servers=["http://hot:8080"],
+            cold_servers=["http://cold:8080"],
+            metadata=metadata
+        )
+
+        # Should not raise exception, just log error
+        await service._publish_classification_to_redis(result)
+
+    @pytest.mark.asyncio
+    async def test_get_all_gateway_urls_handles_db_error(self):
+        """Test _get_all_gateway_urls handles database errors."""
+        # _get_all_gateway_urls is a method on ServerClassificationService
+        # SessionLocal is imported lazily inside the method from mcpgateway.db
+        service = ServerClassificationService(redis_client=None)
+        with patch("mcpgateway.db.SessionLocal") as mock_session_local:
+            mock_session_local.return_value.__enter__.return_value.execute.side_effect = Exception("Database error")
+
+            # Should return empty list on error, not raise exception
+            result = await service._get_all_gateway_urls()
+            assert result == []
+
+    @pytest.mark.asyncio
+    async def test_get_server_classification_handles_redis_error(self):
+        """Test get_server_classification handles Redis errors gracefully."""
+        mock_redis = AsyncMock()
+        mock_redis.sismember = AsyncMock(side_effect=Exception("Redis error"))
+
+        service = ServerClassificationService(redis_client=mock_redis)
+
+        # Should return None on error (fail-open)
+        result = await service.get_server_classification("http://test:8080")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_should_poll_server_handles_redis_error(self):
+        """Test should_poll_server returns True on Redis error (fail-open)."""
+        mock_redis = AsyncMock()
+        mock_redis.sismember = AsyncMock(side_effect=Exception("Redis error"))
+
+        service = ServerClassificationService(redis_client=mock_redis)
+
+        with patch("mcpgateway.services.server_classification_service.settings") as mock_settings:
+            mock_settings.hot_cold_classification_enabled = True
+
+            # Should return True on error (fail-open)
+            result = await service.should_poll_server("http://test:8080", "health")
+            assert result is True
+
+    @pytest.mark.asyncio
+    async def test_update_poll_timestamp_handles_redis_error(self):
+        """Test _update_poll_timestamp handles Redis errors gracefully."""
+        mock_redis = AsyncMock()
+        mock_redis.set = AsyncMock(side_effect=Exception("Redis error"))
+
+        service = ServerClassificationService(redis_client=mock_redis)
+
+        # Should not raise exception, just log warning
+        await service._update_poll_timestamp("http://test:8080", "health", "hot")
+
+    @pytest.mark.asyncio
+    async def test_update_poll_timestamp_with_no_redis(self):
+        """Test _update_poll_timestamp returns early when Redis is None."""
+        service = ServerClassificationService(redis_client=None)
+
+        # Should return early without error
+        await service._update_poll_timestamp("http://test:8080", "health", "hot")

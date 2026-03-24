@@ -1184,3 +1184,47 @@ def test_reverse_proxy_feature_default_false():
     """mcpgateway_reverse_proxy_enabled should default to False."""
     s = Settings(_env_file=None)
     assert s.mcpgateway_reverse_proxy_enabled is False
+
+
+# --------------------------------------------------------------------------- #
+#                    Staggered Polling Configuration                          #
+# --------------------------------------------------------------------------- #
+def test_staggered_polling_tick_interval_scales_with_refresh_interval():
+    """staggered_polling_tick_interval should be 1/20th of gateway_auto_refresh_interval."""
+    s = Settings(gateway_auto_refresh_interval=100, _env_file=None)
+    assert s.staggered_polling_tick_interval == 5.0
+
+    s = Settings(gateway_auto_refresh_interval=20, _env_file=None)
+    assert s.staggered_polling_tick_interval == 1.0
+
+    s = Settings(gateway_auto_refresh_interval=600, _env_file=None)
+    assert s.staggered_polling_tick_interval == 30.0
+
+
+def test_staggered_polling_tick_interval_bounds():
+    """staggered_polling_tick_interval should be clamped between 1.0 and 30.0."""
+    # Very small refresh interval should clamp to 1.0
+    s = Settings(gateway_auto_refresh_interval=10, _env_file=None)
+    assert s.staggered_polling_tick_interval == 1.0
+
+    # Very large refresh interval should clamp to 30.0
+    s = Settings(gateway_auto_refresh_interval=1000, _env_file=None)
+    assert s.staggered_polling_tick_interval == 30.0
+
+
+def test_staggered_polling_tolerance_matches_tick_interval():
+    """staggered_polling_tolerance should equal tick interval."""
+    from mcpgateway.config import Settings
+
+    s = Settings(gateway_auto_refresh_interval=100, _env_file=None)
+    assert s.staggered_polling_tolerance == s.staggered_polling_tick_interval
+    assert s.staggered_polling_tolerance == 5.0
+
+
+def test_hot_server_check_interval_property():
+    """hot_server_check_interval should be auto-derived from gateway_auto_refresh_interval."""
+    from mcpgateway.config import Settings
+
+    s = Settings(gateway_auto_refresh_interval=60, _env_file=None)
+    # hot_server_check_interval defaults to gateway_auto_refresh_interval
+    assert s.hot_server_check_interval == 60

@@ -3907,6 +3907,173 @@ async def test_shutdown_releases_redis_leader_success():
 
 
 @pytest.mark.asyncio
+async def test_shutdown_stops_classification_service():
+    """Test that shutdown stops classification service if present."""
+    service = GatewayService()
+    service._redis_client = None
+    service._http_client = SimpleNamespace(aclose=AsyncMock())
+    service._event_service = SimpleNamespace(shutdown=AsyncMock())
+
+    # Create mock classification service
+    mock_classification = AsyncMock()
+    mock_classification.stop = AsyncMock()
+    service._classification_service = mock_classification
+
+    await service.shutdown()
+
+    # Verify classification service stop was called
+    mock_classification.stop.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_cancels_leader_heartbeat_task():
+    """Test that shutdown cancels leader heartbeat task if present."""
+    service = GatewayService()
+    service._redis_client = None
+    service._http_client = SimpleNamespace(aclose=AsyncMock())
+    service._event_service = SimpleNamespace(shutdown=AsyncMock())
+    service._classification_service = None
+
+    # Create a real asyncio task that can be cancelled and awaited
+    async def dummy_heartbeat():
+        try:
+            await asyncio.sleep(1000)  # Long sleep to ensure it gets cancelled
+        except asyncio.CancelledError:
+            pass
+
+    service._leader_heartbeat_task = asyncio.create_task(dummy_heartbeat())
+
+    await service.shutdown()
+
+    # Verify task was cancelled
+    assert service._leader_heartbeat_task.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_should_poll_gateway_now_naive_mode(monkeypatch):
+    """Test _should_poll_gateway_now returns True when staggered polling is disabled."""
+    import time
+
+    monkeypatch.setattr("mcpgateway.services.gateway_service.settings.staggered_polling_enabled", False)
+
+    service = GatewayService()
+    service._health_check_interval = 60.0
+
+    mock_gateway = MagicMock()
+    mock_gateway.gateway_id = "test-gateway"
+
+    # Should always return True in naive mode
+    assert service._should_poll_gateway_now(mock_gateway, time.time()) is True
+
+
+@pytest.mark.asyncio
+async def test_should_poll_gateway_now_within_tolerance(monkeypatch):
+    """Test _should_poll_gateway_now returns True when current time is within tolerance."""
+    monkeypatch.setattr("mcpgateway.services.gateway_service.settings.staggered_polling_enabled", True)
+    monkeypatch.setattr("mcpgateway.services.gateway_service.settings.staggered_polling_tolerance", 5.0)
+
+    service = GatewayService()
+    service._health_check_interval = 60.0
+
+    mock_gateway = MagicMock()
+    mock_gateway.gateway_id = "test-gateway"
+
+    # Use a deterministic fixed offset (30s) to avoid hash randomization edge cases
+    fixed_offset = 30.0
+    with patch.object(service, "_calculate_gateway_poll_offset", return_value=fixed_offset):
+        # current_cycle_start must be a multiple of the interval so the method aligns correctly
+        current_cycle_start = 960.0  # 16 * 60, aligned to 60s interval
+        scheduled_time = current_cycle_start + fixed_offset  # 990.0
+
+        # Test exactly at scheduled time
+        assert service._should_poll_gateway_now(mock_gateway, scheduled_time) is True
+
+        # Test within tolerance (±2 seconds is well within ±5 second tolerance)
+        assert service._should_poll_gateway_now(mock_gateway, scheduled_time + 2.0) is True
+        assert service._should_poll_gateway_now(mock_gateway, scheduled_time - 2.0) is True
+
+
+@pytest.mark.asyncio
+async def test_should_poll_gateway_now_outside_tolerance(monkeypatch):
+    """Test _should_poll_gateway_now returns False when outside tolerance window."""
+    import time
+
+    monkeypatch.setattr("mcpgateway.services.gateway_service.settings.staggered_polling_enabled", True)
+    monkeypatch.setattr("mcpgateway.services.gateway_service.settings.staggered_polling_tolerance", 5.0)
+
+    service = GatewayService()
+    service._health_check_interval = 60.0
+
+    mock_gateway = MagicMock()
+    mock_gateway.gateway_id = "test-gateway"
+
+    # Calculate offset and a time far outside tolerance
+    offset = service._calculate_gateway_poll_offset("test-gateway")
+    current_cycle_start = 0
+    scheduled_time = current_cycle_start + offset
+
+    # Test outside tolerance (more than 5 seconds away)
+    assert service._should_poll_gateway_now(mock_gateway, scheduled_time + 10.0) is False
+    assert service._should_poll_gateway_now(mock_gateway, scheduled_time - 10.0) is False
+
+
+@pytest.mark.asyncio
+async def test_check_is_leader_redis_mode(monkeypatch):
+    """Test _check_is_leader with Redis leader election."""
+    monkeypatch.setattr("mcpgateway.services.gateway_service.settings.cache_type", "redis")
+
+    service = GatewayService()
+    service._instance_id = "instance-1"
+    service._leader_key = "leader-key"
+
+    # Test when this instance is leader
+    mock_redis = AsyncMock()
+    mock_redis.get = AsyncMock(return_value="instance-1")
+    service._redis_client = mock_redis
+
+    assert await service._check_is_leader() is True
+
+    # Test when another instance is leader
+    mock_redis.get = AsyncMock(return_value="instance-2")
+    assert await service._check_is_leader() is False
+
+
+@pytest.mark.asyncio
+async def test_check_is_leader_single_worker_mode(monkeypatch):
+    """Test _check_is_leader always returns True in single-worker mode."""
+    monkeypatch.setattr("mcpgateway.services.gateway_service.settings.cache_type", "none")
+
+    service = GatewayService()
+    service._redis_client = None
+
+    # Should always be leader in single-worker mode
+    assert await service._check_is_leader() is True
+
+
+@pytest.mark.asyncio
+async def test_check_is_leader_filelock_mode(monkeypatch):
+    """Test _check_is_leader with FileLock-based leader election."""
+    monkeypatch.setattr("mcpgateway.services.gateway_service.settings.cache_type", "inmemory")
+
+    service = GatewayService()
+    service._redis_client = None
+
+    # Create mock file lock
+    from filelock import Timeout
+    mock_lock = MagicMock()
+    service._file_lock = mock_lock
+
+    # Test when lock can be acquired
+    mock_lock.acquire = Mock(return_value=None)
+    assert await service._check_is_leader() is True
+    mock_lock.acquire.assert_called_once_with(timeout=0)
+
+    # Test when lock cannot be acquired
+    mock_lock.acquire = Mock(side_effect=Timeout("lock-path"))
+    assert await service._check_is_leader() is False
+
+
+@pytest.mark.asyncio
 async def test_fetch_tools_after_oauth_gateway_missing(gateway_service):
     db = MagicMock()
     result = MagicMock()

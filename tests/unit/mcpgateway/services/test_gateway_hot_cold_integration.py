@@ -416,3 +416,43 @@ class TestFailOpenBehavior:
                 await gateway_service._check_single_gateway_health(mock_gateway, user_email="test@example.com")
             except Exception as e:
                 pytest.fail(f"Health check should not raise exception on classification error: {e}")
+
+    @pytest.mark.asyncio
+    async def test_auto_refresh_proceeds_on_classification_error_via_health_check(self, gateway_service_with_classification, monkeypatch):
+        """Test auto-refresh proceeds when classification check fails during health check (fail-open)."""
+        monkeypatch.setattr("mcpgateway.services.gateway_service.settings.auto_refresh_servers", True)
+
+        gateway_service, mock_classification = gateway_service_with_classification
+
+        # Classification service raises error
+        mock_classification.should_poll_server = AsyncMock(side_effect=Exception("Redis connection error"))
+
+        mock_gateway = _make_mock_gateway(url="http://test-server:8000", name="test-gateway")
+        mock_gateway.last_refresh_at = None
+
+        # Mock the internal refresh method call
+        with patch.object(gateway_service, "_refresh_gateway_tools_resources_prompts", AsyncMock(return_value={"added": 0, "updated": 0, "removed": 0})):
+            with patch("mcpgateway.services.gateway_service.fresh_db_session") as mock_fresh_db:
+                mock_session = MagicMock()
+                mock_fresh_db.return_value.__enter__.return_value = mock_session
+                mock_session.execute.return_value.scalar_one_or_none.return_value = mock_gateway
+                mock_session.commit = MagicMock()
+
+                with patch("mcpgateway.services.gateway_service.get_isolated_http_client") as mock_client:
+                    # Mock HTTP response
+                    mock_response = AsyncMock()
+                    mock_response.status_code = 200
+                    mock_response.raise_for_status = MagicMock()
+                    mock_http = AsyncMock()
+                    mock_http.__aenter__.return_value = mock_http
+                    mock_http.__aexit__.return_value = None
+                    mock_http.stream = AsyncMock(return_value=mock_response)
+                    mock_response.__aenter__.return_value = mock_response
+                    mock_response.__aexit__.return_value = None
+                    mock_client.return_value = mock_http
+
+                    # Should not raise exception, auto-refresh should proceed with fail-open
+                    try:
+                        await gateway_service._check_single_gateway_health(mock_gateway, user_email="test@example.com")
+                    except Exception as e:
+                        pytest.fail(f"Health check with auto-refresh should not raise exception on classification error: {e}")

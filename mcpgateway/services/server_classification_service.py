@@ -109,6 +109,7 @@ class ServerClassificationService:
         self._instance_id = f"classifier_{id(self)}"
         self._leader_ttl = 90  # seconds
         self._running = False
+        self._error_backoff_seconds: float = 30.0  # Back off duration on loop errors (override in tests)
 
     async def start(self) -> None:
         """Start background classification loop (if enabled)."""
@@ -154,7 +155,7 @@ class ServerClassificationService:
                 break
             except Exception as e:
                 logger.error(f"Classification loop error: {e}", exc_info=True)
-                await asyncio.sleep(30)  # Back off on error
+                await asyncio.sleep(self._error_backoff_seconds)  # Back off on error
 
     async def _try_acquire_leader_lock(self) -> bool:
         """Try to acquire leader lock for classification.
@@ -200,7 +201,9 @@ class ServerClassificationService:
             if self._redis:
                 await self._publish_classification_to_redis(result)
 
-            logger.info(f"Classification completed: {len(result.hot_servers)} hot, " f"{len(result.cold_servers)} cold (N={result.metadata.total_servers}, " f"eligible={result.metadata.eligible_count})")
+            logger.info(
+                f"Classification completed: {len(result.hot_servers)} hot, " f"{len(result.cold_servers)} cold (N={result.metadata.total_servers}, " f"eligible={result.metadata.eligible_count})"
+            )
 
             if result.metadata.underutilized_reason:
                 logger.debug(f"Underutilization: {result.metadata.underutilized_reason}")
@@ -293,7 +296,9 @@ class ServerClassificationService:
         return ClassificationResult(
             hot_servers=hot_servers,
             cold_servers=cold_servers,
-            metadata=ClassificationMetadata(total_servers=total_servers, hot_cap=hot_cap, hot_actual=hot_actual, eligible_count=eligible_count, timestamp=time.time(), underutilized_reason=underutilized_reason),
+            metadata=ClassificationMetadata(
+                total_servers=total_servers, hot_cap=hot_cap, hot_actual=hot_actual, eligible_count=eligible_count, timestamp=time.time(), underutilized_reason=underutilized_reason
+            ),
         )
 
     async def _get_all_gateway_urls(self) -> List[str]:
