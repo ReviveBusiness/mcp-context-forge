@@ -1894,18 +1894,18 @@ Disallow: /
     @property
     def staggered_polling_tick_interval(self) -> float:
         """Auto-scale tick interval based on gateway_auto_refresh_interval.
-        
+
         Formula: max(1.0, min(30.0, interval / 20))
-        
+
         This scales the polling loop wake frequency as a percentage of the main interval,
         providing finer granularity for short intervals while capping at 30s for long intervals.
-        
+
         Examples:
             - 60s interval → 3.0s tick (5% of interval)
             - 300s interval → 15.0s tick (5% of interval)
             - 600s interval → 30.0s tick (capped at max)
             - 3600s interval → 30.0s tick (capped at max)
-        
+
         Returns:
             float: Tick interval in seconds (1.0 to 30.0)
         """
@@ -1915,10 +1915,10 @@ Disallow: /
     @property
     def staggered_polling_tolerance(self) -> float:
         """Tolerance window scales with tick interval.
-        
+
         Tolerance determines the ±window for "gateway is due for polling".
         Wider tolerance = more gateways polled per tick (batch efficiency vs timing precision).
-        
+
         Returns:
             float: Tolerance window in seconds (same as tick_interval)
         """
@@ -1927,9 +1927,9 @@ Disallow: /
     @property
     def hot_server_check_interval(self) -> float:
         """Hot server polling interval (auto-derived from gateway_auto_refresh_interval).
-        
+
         Hot servers (top 20% by usage) are polled at the same rate as gateway tool refresh.
-        
+
         Returns:
             float: Hot server check interval in seconds (equals gateway_auto_refresh_interval)
         """
@@ -1938,13 +1938,13 @@ Disallow: /
     @property
     def cold_server_check_interval(self) -> float:
         """Cold server polling interval (auto-derived from gateway_auto_refresh_interval).
-        
+
         Cold servers (remaining 80%) are polled at 3x the gateway refresh rate to save resources.
-        
+
         Examples:
             - gateway_auto_refresh_interval=60s → cold=180s (3 minutes)
             - gateway_auto_refresh_interval=300s → cold=900s (15 minutes)
-        
+
         Returns:
             float: Cold server check interval in seconds (3x gateway_auto_refresh_interval)
         """
