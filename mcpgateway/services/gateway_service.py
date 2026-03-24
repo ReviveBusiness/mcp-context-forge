@@ -4080,17 +4080,16 @@ class GatewayService(BaseService):  # pylint: disable=too-many-instance-attribut
             current_leader = await self._redis_client.get(self._leader_key)
             return current_leader == self._instance_id
 
-        elif settings.cache_type == "none":
+        if settings.cache_type == "none":
             # Single-worker mode: always leader
             return True
 
-        else:
-            # FileLock mode: try to acquire lock with timeout=0 (non-blocking)
-            try:
-                self._file_lock.acquire(timeout=0)
-                return True
-            except Timeout:
-                return False
+        # FileLock mode: try to acquire lock with timeout=0 (non-blocking)
+        try:
+            self._file_lock.acquire(timeout=0)
+            return True
+        except Timeout:
+            return False
 
     async def _run_health_checks(self, user_email: str) -> None:
         """Run health checks periodically,

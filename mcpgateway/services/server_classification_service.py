@@ -55,8 +55,8 @@ class ServerUsageMetrics:
 class ClassificationMetadata:
     """Metadata about classification run."""
 
-    N: int  # Total servers
-    hot_cap: int  # Maximum hot servers (20% of N)
+    total_servers: int  # Total servers
+    hot_cap: int  # Maximum hot servers (20% of total_servers)
     hot_actual: int  # Actual hot servers selected
     eligible_count: int  # Servers with pooled sessions
     timestamp: float  # Classification timestamp
@@ -200,7 +200,7 @@ class ServerClassificationService:
             if self._redis:
                 await self._publish_classification_to_redis(result)
 
-            logger.info(f"Classification completed: {len(result.hot_servers)} hot, " f"{len(result.cold_servers)} cold (N={result.metadata.N}, " f"eligible={result.metadata.eligible_count})")
+            logger.info(f"Classification completed: {len(result.hot_servers)} hot, " f"{len(result.cold_servers)} cold (N={result.metadata.total_servers}, " f"eligible={result.metadata.eligible_count})")
 
             if result.metadata.underutilized_reason:
                 logger.debug(f"Underutilization: {result.metadata.underutilized_reason}")
@@ -293,7 +293,7 @@ class ServerClassificationService:
         return ClassificationResult(
             hot_servers=hot_servers,
             cold_servers=cold_servers,
-            metadata=ClassificationMetadata(N=total_servers, hot_cap=hot_cap, hot_actual=hot_actual, eligible_count=eligible_count, timestamp=time.time(), underutilized_reason=underutilized_reason),
+            metadata=ClassificationMetadata(total_servers=total_servers, hot_cap=hot_cap, hot_actual=hot_actual, eligible_count=eligible_count, timestamp=time.time(), underutilized_reason=underutilized_reason),
         )
 
     async def _get_all_gateway_urls(self) -> List[str]:
