@@ -270,7 +270,7 @@ services:
       - METRICS_CACHE_TTL_SECONDS=120
       # MCP Server Health Check
       # Interval in seconds between health checks (default: 300)
-      - HEALTH_CHECK_INTERVAL=60
+      - HEALTH_CHECK_INTERVAL=300
       # Timeout in seconds for each health check request (default: 5)
       - HEALTH_CHECK_TIMEOUT=5
       # Consecutive failures before marking gateway offline (default: 3)
@@ -283,7 +283,7 @@ services:
       # SSE gateways use polling only; StreamableHTTP gateways with session pooling
       # also receive push notifications via notifications/tools/list_changed
       - AUTO_REFRESH_SERVERS=true
-      - GATEWAY_AUTO_REFRESH_INTERVAL=60
+      - GATEWAY_AUTO_REFRESH_INTERVAL=300
       # Hot/cold server classification - Stagger polling based on upstream MCP session usage
       # Classifies servers into hot (top 20% by recent usage) and cold (remaining 80%)
       # Hot servers polled at GATEWAY_AUTO_REFRESH_INTERVAL (1x), cold at 3x (auto-derived)

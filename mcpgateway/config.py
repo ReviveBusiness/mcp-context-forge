@@ -1650,7 +1650,7 @@ class Settings(BaseSettings):
 
     # Health Checks
     # Interval in seconds between health checks (aligned with mcp_session_pool_health_check_interval)
-    health_check_interval: int = 60
+    health_check_interval: int = 300
     # Timeout in seconds for each health check request
     health_check_timeout: int = 5
     # Per-check timeout (seconds) to bound total time of one gateway health check
@@ -1667,7 +1667,7 @@ class Settings(BaseSettings):
 
     # Per-gateway refresh configuration (used when auto_refresh_servers is True)
     # Gateways can override this with their own refresh_interval_seconds
-    gateway_auto_refresh_interval: int = Field(default=60, ge=60, description="Default refresh interval in seconds for gateway tools/resources/prompts sync (minimum 60 seconds)")
+    gateway_auto_refresh_interval: int = Field(default=300, ge=60, description="Default refresh interval in seconds for gateway tools/resources/prompts sync (minimum 60 seconds)")
 
     # Staggered polling configuration (default behavior - replaces naive "fire all at once" health checks)
     # Gateways are assigned deterministic offsets using index-based linear distribution: offset = (i/N) × interval
@@ -1942,8 +1942,8 @@ Disallow: /
         Cold servers (remaining 80%) are polled at 3x the gateway refresh rate to save resources.
 
         Examples:
-            - gateway_auto_refresh_interval=60s → cold=180s (3 minutes)
             - gateway_auto_refresh_interval=300s → cold=900s (15 minutes)
+            - gateway_auto_refresh_interval=60s → cold=180s (3 minutes)
 
         Returns:
             float: Cold server check interval in seconds (3x gateway_auto_refresh_interval)
