@@ -442,6 +442,77 @@ class TestClassificationLogic:
         # Total use_count should be summed: 10 + 5 + 15 = 30
         # (Verification via classification order, not direct assertion)
 
+    def test_classification_handles_session_extraction_error(self):
+        """Test classification handles errors when extracting session metrics."""
+        service = ServerClassificationService(redis_client=None)
+        now = time.time()
+
+        server_url = "http://server1:8080"
+
+        # Create a mock pool with a problematic session that raises error on attribute access
+        pool = MagicMock()
+        pool_key = ("anonymous", server_url, "hash123", TransportType.STREAMABLE_HTTP, None)
+
+        # Create a mock session that raises error when accessing attributes
+        bad_session = MagicMock()
+        bad_session.last_used = property(lambda self: 1 / 0)  # Will raise ZeroDivisionError
+
+        mock_queue = MagicMock()
+        mock_queue._queue = [bad_session]
+
+        pool._pools = {pool_key: mock_queue}
+        pool._active = {pool_key: set()}  # Empty active set
+
+        all_urls = [server_url]
+
+        # Should handle error gracefully and continue
+        result = service._classify_servers_from_pool(pool, all_urls)
+
+        # Server should be classified as cold (no valid metrics extracted)
+        assert server_url in result.cold_servers
+        assert server_url not in result.hot_servers
+
+    def test_classification_counts_active_sessions(self):
+        """Test classification counts active sessions from pool._active."""
+        service = ServerClassificationService(redis_client=None)
+        now = time.time()
+
+        server_url = "http://server1:8080"
+        pool_key = ("anonymous", server_url, "hash123", TransportType.STREAMABLE_HTTP, None)
+
+        # Create pool with one pooled session
+        pooled_session = self._create_pooled_session(server_url, now - 10, use_count=5)
+
+        pool = MagicMock()
+        mock_queue = MagicMock()
+        mock_queue._queue = [pooled_session]
+
+        # Add 3 active sessions (mocked as a set with 3 items)
+        active_sessions = {MagicMock(), MagicMock(), MagicMock()}
+
+        pool._pools = {pool_key: mock_queue}
+        pool._active = {pool_key: active_sessions}
+
+        all_urls = [server_url, "http://server2:8080", "http://server3:8080", "http://server4:8080", "http://server5:8080"]
+
+        result = service._classify_servers_from_pool(pool, all_urls)
+
+        # Server should be hot (has both pooled and active sessions)
+        assert server_url in result.hot_servers
+
+    @pytest.mark.asyncio
+    async def test_publish_classification_without_redis(self):
+        """Test _publish_classification_to_redis returns early when Redis is None."""
+        service = ServerClassificationService(redis_client=None)
+
+        metadata = ClassificationMetadata(total_servers=5, hot_cap=1, hot_actual=1, eligible_count=3, timestamp=time.time())
+        result = ClassificationResult(hot_servers=["http://hot1:8080"], cold_servers=["http://cold1:8080", "http://cold2:8080"], metadata=metadata)
+
+        # Should return early without error
+        await service._publish_classification_to_redis(result)
+
+        # No assertions needed - just verify it doesn't crash
+
 
 class TestLeaderElection:
     """Tests for leader election in multi-worker deployments."""

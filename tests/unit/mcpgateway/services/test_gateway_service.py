@@ -3154,6 +3154,88 @@ class TestGatewayHealth:
                     gateway_service._refresh_gateway_tools_resources_prompts.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_health_skips_refresh_classification_says_no(self, gateway_service, mock_gateway_health, mock_db_session):
+        """Test that health check skips refresh when classification service says not to poll."""
+        gateway_service._refresh_gateway_tools_resources_prompts = AsyncMock()
+        gateway_service.set_gateway_state = AsyncMock()
+        gateway_service._get_refresh_lock = MagicMock()
+
+        # Mock classification service that says NOT to poll
+        mock_classification = AsyncMock()
+        mock_classification.should_poll_server = AsyncMock(return_value=False)
+        gateway_service._classification_service = mock_classification
+
+        lock = MagicMock()
+        lock.locked.return_value = False
+        lock.__aenter__ = AsyncMock(return_value=None)
+        lock.__aexit__ = AsyncMock(return_value=None)
+        gateway_service._get_refresh_lock.return_value = lock
+
+        # Mock http client
+        mock_client = AsyncMock()
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.__aexit__.return_value = None
+        mock_client.get.return_value = MagicMock(status_code=200)
+
+        with patch("mcpgateway.services.gateway_service.settings") as mock_settings:
+            mock_settings.auto_refresh_servers = True
+            mock_settings.gateway_auto_refresh_interval = 300
+            mock_settings.enable_ed25519_signing = False
+            mock_settings.httpx_admin_read_timeout = 5.0
+
+            with patch("mcpgateway.services.http_client_service.get_isolated_http_client", return_value=mock_client):
+                with patch("mcpgateway.services.gateway_service.fresh_db_session", return_value=mock_db_session):
+                    session = mock_db_session.__enter__()
+                    session.execute.return_value = _make_execute_result(scalar=mock_gateway_health)
+
+                    await gateway_service._check_single_gateway_health(mock_gateway_health)
+
+                    # Should NOT call refresh because classification service said no
+                    gateway_service._refresh_gateway_tools_resources_prompts.assert_not_called()
+                    # Should have checked with classification service
+                    mock_classification.should_poll_server.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_health_proceeds_refresh_classification_fails(self, gateway_service, mock_gateway_health, mock_db_session):
+        """Test that health check proceeds with refresh when classification check fails (fail-open)."""
+        gateway_service._refresh_gateway_tools_resources_prompts = AsyncMock()
+        gateway_service.set_gateway_state = AsyncMock()
+        gateway_service._get_refresh_lock = MagicMock()
+
+        # Mock classification service that raises an exception
+        mock_classification = AsyncMock()
+        mock_classification.should_poll_server = AsyncMock(side_effect=Exception("Classification error"))
+        gateway_service._classification_service = mock_classification
+
+        lock = MagicMock()
+        lock.locked.return_value = False
+        lock.__aenter__ = AsyncMock(return_value=None)
+        lock.__aexit__ = AsyncMock(return_value=None)
+        gateway_service._get_refresh_lock.return_value = lock
+
+        # Mock http client
+        mock_client = AsyncMock()
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.__aexit__.return_value = None
+        mock_client.get.return_value = MagicMock(status_code=200)
+
+        with patch("mcpgateway.services.gateway_service.settings") as mock_settings:
+            mock_settings.auto_refresh_servers = True
+            mock_settings.gateway_auto_refresh_interval = 300
+            mock_settings.enable_ed25519_signing = False
+            mock_settings.httpx_admin_read_timeout = 5.0
+
+            with patch("mcpgateway.services.http_client_service.get_isolated_http_client", return_value=mock_client):
+                with patch("mcpgateway.services.gateway_service.fresh_db_session", return_value=mock_db_session):
+                    session = mock_db_session.__enter__()
+                    session.execute.return_value = _make_execute_result(scalar=mock_gateway_health)
+
+                    await gateway_service._check_single_gateway_health(mock_gateway_health)
+
+                    # Should call refresh despite classification error (fail-open)
+                    gateway_service._refresh_gateway_tools_resources_prompts.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_initialize_redis_ping_failure(self, monkeypatch):
         # First-Party
         import mcpgateway.services.gateway_service as gs
