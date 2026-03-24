@@ -19,6 +19,7 @@ from __future__ import annotations
 # Standard
 import asyncio
 from dataclasses import asdict, dataclass
+import hashlib
 import logging
 from math import floor
 import time
@@ -95,7 +96,7 @@ class ServerClassificationService:
     CLASSIFICATION_COLD_KEY = "mcpgateway:server_classification:cold"
     CLASSIFICATION_METADATA_KEY = "mcpgateway:server_classification:metadata"
     CLASSIFICATION_TIMESTAMP_KEY = "mcpgateway:server_classification:timestamp"
-    POLL_STATE_KEY_TEMPLATE = "mcpgateway:server_poll_state:{url}:last_{poll_type}"
+    POLL_STATE_KEY_TEMPLATE = "mcpgateway:server_poll_state:{url_hash}:last_{poll_type}"
     LEADER_KEY = "mcpgateway:server_classification:leader"
 
     def __init__(self, redis_client: Optional[Redis] = None):
@@ -315,7 +316,7 @@ class ServerClassificationService:
 
         try:
             with SessionLocal() as db:
-                result = db.execute(select(Gateway.url).where(Gateway.enabled is True))
+                result = db.execute(select(Gateway.url).where(Gateway.enabled.is_(True)))
                 urls = [row[0] for row in result]
                 return urls
         except Exception as e:
@@ -338,17 +339,24 @@ class ServerClassificationService:
                 await pipe.delete(self.CLASSIFICATION_HOT_KEY, self.CLASSIFICATION_COLD_KEY)
 
                 # Set new classification
+                # Set TTL on classification sets to prevent stale data after worker crash
+                ttl = int(settings.gateway_auto_refresh_interval * 2)
+
                 if result.hot_servers:
                     await pipe.sadd(self.CLASSIFICATION_HOT_KEY, *result.hot_servers)
 
                 if result.cold_servers:
                     await pipe.sadd(self.CLASSIFICATION_COLD_KEY, *result.cold_servers)
 
+                # Expire classification sets regardless of whether they had members
+                await pipe.expire(self.CLASSIFICATION_HOT_KEY, ttl)
+                await pipe.expire(self.CLASSIFICATION_COLD_KEY, ttl)
+
                 # Store metadata (expire after 2x classification interval)
                 metadata_json = orjson.dumps(asdict(result.metadata))
-                await pipe.set(self.CLASSIFICATION_METADATA_KEY, metadata_json, ex=int(settings.gateway_auto_refresh_interval * 2))
+                await pipe.set(self.CLASSIFICATION_METADATA_KEY, metadata_json, ex=ttl)
 
-                await pipe.set(self.CLASSIFICATION_TIMESTAMP_KEY, result.metadata.timestamp)
+                await pipe.set(self.CLASSIFICATION_TIMESTAMP_KEY, result.metadata.timestamp, ex=ttl)
 
                 await pipe.execute()
 
@@ -404,8 +412,9 @@ class ServerClassificationService:
             if classification is None:
                 return True  # Not yet classified, poll anyway
 
-            # Get last poll time
-            last_poll_key = self.POLL_STATE_KEY_TEMPLATE.format(url=url, poll_type=poll_type)
+            # Get last poll time (hash URL to prevent key injection and reduce key size)
+            url_hash = hashlib.sha256(url.encode()).hexdigest()[:32]
+            last_poll_key = self.POLL_STATE_KEY_TEMPLATE.format(url_hash=url_hash, poll_type=poll_type)
             last_poll_str = await self._redis.get(last_poll_key)
 
             if last_poll_str is None:
@@ -415,6 +424,8 @@ class ServerClassificationService:
 
             last_poll = float(last_poll_str)
             now = time.time()
+            if not (0 < last_poll <= now + 60):
+                last_poll = 0.0  # treat as never polled; prevents manipulation via future timestamps
             elapsed = now - last_poll
 
             # Determine interval based on classification
@@ -445,7 +456,8 @@ class ServerClassificationService:
         interval = settings.hot_server_check_interval if classification == "hot" else settings.cold_server_check_interval
 
         try:
-            last_poll_key = self.POLL_STATE_KEY_TEMPLATE.format(url=url, poll_type=poll_type)
+            url_hash = hashlib.sha256(url.encode()).hexdigest()[:32]
+            last_poll_key = self.POLL_STATE_KEY_TEMPLATE.format(url_hash=url_hash, poll_type=poll_type)
             await self._redis.set(last_poll_key, time.time(), ex=int(interval * 2))  # Expire after 2x interval
         except Exception as e:
             logger.warning(f"Failed to update poll timestamp for {url}: {e}")

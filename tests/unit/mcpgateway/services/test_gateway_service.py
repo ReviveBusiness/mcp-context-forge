@@ -4086,11 +4086,14 @@ async def test_should_poll_gateway_now_outside_tolerance(monkeypatch):
     service = GatewayService()
     service._health_check_interval = 60.0
 
+    import uuid
+
     mock_gateway = MagicMock()
-    mock_gateway.gateway_id = "test-gateway"
+    test_uuid = uuid.UUID("12345678-1234-5678-1234-567812345678")
+    mock_gateway.gateway_id = test_uuid
 
     # Calculate offset and a time far outside tolerance
-    offset = service._calculate_gateway_poll_offset("test-gateway")
+    offset = service._calculate_gateway_poll_offset(test_uuid)
     current_cycle_start = 0
     scheduled_time = current_cycle_start + offset
 

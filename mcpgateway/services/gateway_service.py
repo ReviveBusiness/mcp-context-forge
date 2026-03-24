@@ -4001,8 +4001,8 @@ class GatewayService(BaseService):  # pylint: disable=too-many-instance-attribut
             >>> offset != offset2
             True
         """
-        # Use stable hash to get deterministic offset for this gateway
-        gateway_hash = abs(hash(str(gateway_id)))
+        # Use UUID integer (stable 128-bit, no PYTHONHASHSEED dependency) for deterministic offset
+        gateway_hash = gateway_id.int
         offset = gateway_hash % int(self._health_check_interval)
         return float(offset)
 

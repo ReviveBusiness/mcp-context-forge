@@ -55,7 +55,7 @@ class TestServerClassificationServiceInit:
         assert ServerClassificationService.CLASSIFICATION_COLD_KEY == "mcpgateway:server_classification:cold"
         assert ServerClassificationService.CLASSIFICATION_METADATA_KEY == "mcpgateway:server_classification:metadata"
         assert ServerClassificationService.CLASSIFICATION_TIMESTAMP_KEY == "mcpgateway:server_classification:timestamp"
-        assert ServerClassificationService.POLL_STATE_KEY_TEMPLATE == "mcpgateway:server_poll_state:{url}:last_{poll_type}"
+        assert ServerClassificationService.POLL_STATE_KEY_TEMPLATE == "mcpgateway:server_poll_state:{url_hash}:last_{poll_type}"
         assert ServerClassificationService.LEADER_KEY == "mcpgateway:server_classification:leader"
 
 
@@ -887,7 +887,10 @@ class TestRedisStateManagement:
             # Should set timestamp with 2x interval expiry
             mock_redis.set.assert_awaited_once()
             args = mock_redis.set.await_args
-            assert args[0][0] == "mcpgateway:server_poll_state:http://test:8080:last_health"
+            import hashlib
+            url_hash = hashlib.sha256(b"http://test:8080").hexdigest()[:32]
+            expected_key = f"mcpgateway:server_poll_state:{url_hash}:last_health"
+            assert args[0][0] == expected_key
             assert args[1]["ex"] == 600  # 2x interval
 
 
