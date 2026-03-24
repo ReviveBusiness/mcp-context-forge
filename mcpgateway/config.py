@@ -1669,12 +1669,17 @@ class Settings(BaseSettings):
     # Gateways can override this with their own refresh_interval_seconds
     gateway_auto_refresh_interval: int = Field(default=60, ge=60, description="Default refresh interval in seconds for gateway tools/resources/prompts sync (minimum 60 seconds)")
 
+    # Staggered polling configuration (default behavior - replaces naive "fire all at once" health checks)
+    # Gateways are assigned deterministic offsets using index-based linear distribution: offset = (i/N) × interval
+    # This spreads load uniformly: 2000 gateways @ 600s interval = one poll every 0.3s (no spikes)
+    # tick_interval and tolerance are auto-derived from gateway_auto_refresh_interval (see @property methods below)
+    staggered_polling_enabled: bool = Field(default=True, description="Enable staggered polling (default: True). Set to False only for emergency rollback to naive polling.")
+
     # Hot/Cold Server Classification (staggered polling optimization)
     # Classify servers by usage (hot = active sessions, cold = inactive) for optimized polling
+    # Poll intervals auto-derived: hot = gateway_auto_refresh_interval (1x), cold = 3x
+    # Classification refresh uses gateway_auto_refresh_interval (no separate config needed)
     hot_cold_classification_enabled: bool = Field(default=True, description="Enable hot/cold server classification for staggered polling (requires Redis for multi-worker)")
-    hot_server_check_interval: float = Field(default=60, ge=60.0, description="Polling interval (seconds) for hot servers (health + tool discovery)")
-    cold_server_check_interval: float = Field(default=60, ge=60.0, description="Polling interval (seconds) for cold servers (health + tool discovery)")
-    server_classification_refresh_interval: float = Field(default=60.0, ge=30.0, description="How often (seconds) to re-classify hot/cold servers based on session usage")
 
     # Validation Gateway URL
     gateway_validation_timeout: int = 5  # seconds
@@ -1885,6 +1890,65 @@ Disallow: /
         except orjson.JSONDecodeError:
             logger.error(f"Invalid JSON in WELL_KNOWN_CUSTOM_FILES: {self.well_known_custom_files}")
             return {}
+
+    @property
+    def staggered_polling_tick_interval(self) -> float:
+        """Auto-scale tick interval based on gateway_auto_refresh_interval.
+        
+        Formula: max(1.0, min(30.0, interval / 20))
+        
+        This scales the polling loop wake frequency as a percentage of the main interval,
+        providing finer granularity for short intervals while capping at 30s for long intervals.
+        
+        Examples:
+            - 60s interval → 3.0s tick (5% of interval)
+            - 300s interval → 15.0s tick (5% of interval)
+            - 600s interval → 30.0s tick (capped at max)
+            - 3600s interval → 30.0s tick (capped at max)
+        
+        Returns:
+            float: Tick interval in seconds (1.0 to 30.0)
+        """
+        interval = self.gateway_auto_refresh_interval
+        return max(1.0, min(30.0, interval / 20))
+
+    @property
+    def staggered_polling_tolerance(self) -> float:
+        """Tolerance window scales with tick interval.
+        
+        Tolerance determines the ±window for "gateway is due for polling".
+        Wider tolerance = more gateways polled per tick (batch efficiency vs timing precision).
+        
+        Returns:
+            float: Tolerance window in seconds (same as tick_interval)
+        """
+        return self.staggered_polling_tick_interval
+
+    @property
+    def hot_server_check_interval(self) -> float:
+        """Hot server polling interval (auto-derived from gateway_auto_refresh_interval).
+        
+        Hot servers (top 20% by usage) are polled at the same rate as gateway tool refresh.
+        
+        Returns:
+            float: Hot server check interval in seconds (equals gateway_auto_refresh_interval)
+        """
+        return float(self.gateway_auto_refresh_interval)
+
+    @property
+    def cold_server_check_interval(self) -> float:
+        """Cold server polling interval (auto-derived from gateway_auto_refresh_interval).
+        
+        Cold servers (remaining 80%) are polled at 3x the gateway refresh rate to save resources.
+        
+        Examples:
+            - gateway_auto_refresh_interval=60s → cold=180s (3 minutes)
+            - gateway_auto_refresh_interval=300s → cold=900s (15 minutes)
+        
+        Returns:
+            float: Cold server check interval in seconds (3x gateway_auto_refresh_interval)
+        """
+        return float(self.gateway_auto_refresh_interval * 3)
 
     @field_validator("well_known_security_txt_enabled", mode="after")
     @classmethod

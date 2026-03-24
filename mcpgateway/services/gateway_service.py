@@ -3963,6 +3963,126 @@ class GatewayService(BaseService):  # pylint: disable=too-many-instance-attribut
                 logger.warning(f"Leader heartbeat error: {e}")
                 # Continue trying - the main health check loop will handle leadership loss
 
+    def _calculate_gateway_poll_offset(self, gateway_id: uuid.UUID) -> float:
+        """Calculate deterministic poll offset for a gateway within health check interval.
+
+        Uses stable hash function to assign each gateway a fixed offset, ensuring the same
+        gateway always polls at the same relative time within the interval. This spreads
+        gateway health checks uniformly across the health check interval.
+
+        Args:
+            gateway_id: UUID of the gateway to calculate offset for
+
+        Returns:
+            float: Offset in seconds between 0 and health_check_interval (exclusive)
+
+        Examples:
+            >>> service = GatewayService()
+            >>> service._health_check_interval = 60.0
+            >>> gw_id = uuid.UUID('12345678-1234-5678-1234-567812345678')
+            >>> offset = service._calculate_gateway_poll_offset(gw_id)
+            >>> 0 <= offset < 60.0
+            True
+            >>> # Same gateway always gets same offset (deterministic)
+            >>> offset == service._calculate_gateway_poll_offset(gw_id)
+            True
+            >>> # Different gateway gets different offset
+            >>> gw_id2 = uuid.UUID('87654321-4321-8765-4321-876543218765')
+            >>> offset2 = service._calculate_gateway_poll_offset(gw_id2)
+            >>> offset != offset2
+            True
+        """
+        # Use stable hash to get deterministic offset for this gateway
+        gateway_hash = abs(hash(str(gateway_id)))
+        offset = gateway_hash % int(self._health_check_interval)
+        return float(offset)
+
+    def _should_poll_gateway_now(self, gateway: "DbGateway", current_time: float) -> bool:
+        """Check if a gateway should be polled at the current time.
+
+        In naive mode (staggered_polling_enabled=False): always returns True.
+        In staggered mode: checks if current time is within tolerance of gateway's scheduled offset.
+
+        Args:
+            gateway: Gateway database object containing gateway_id
+            current_time: Current timestamp (seconds since epoch)
+
+        Returns:
+            bool: True if gateway should be polled now, False otherwise
+
+        Examples:
+            >>> from unittest.mock import Mock
+            >>> service = GatewayService()
+            >>> service._health_check_interval = 60.0
+            >>> mock_gateway = Mock()
+            >>> mock_gateway.gateway_id = uuid.UUID('12345678-1234-5678-1234-567812345678')
+            >>> # Naive mode: always True
+            >>> settings.staggered_polling_enabled = False
+            >>> service._should_poll_gateway_now(mock_gateway, time.time())
+            True
+            >>> # Staggered mode: check if within tolerance window
+            >>> settings.staggered_polling_enabled = True
+            >>> settings.staggered_polling_tolerance = 5.0
+            >>> # Calculate when gateway should poll
+            >>> offset = service._calculate_gateway_poll_offset(mock_gateway.gateway_id)
+            >>> interval = service._health_check_interval
+            >>> epoch_aligned = int(time.time() / interval) * interval
+            >>> next_poll_time = epoch_aligned + offset
+            >>> # Should poll if current time is within tolerance of next_poll_time
+            >>> current = next_poll_time  # Exactly at poll time
+            >>> service._should_poll_gateway_now(mock_gateway, current)
+            True
+        """
+        # Naive mode: poll all gateways on every cycle
+        if not settings.staggered_polling_enabled:
+            return True
+
+        # Calculate gateway's offset within the interval
+        offset = self._calculate_gateway_poll_offset(gateway.gateway_id)
+
+        # Align current time to interval boundaries and add offset
+        interval = self._health_check_interval
+        current_cycle_start = int(current_time / interval) * interval
+        next_poll_time = current_cycle_start + offset
+
+        # Check if we're within tolerance of the scheduled poll time
+        time_diff = abs(next_poll_time - current_time)
+        return time_diff <= settings.staggered_polling_tolerance
+
+    async def _check_is_leader(self) -> bool:
+        """Check if this instance is the current leader for health checks.
+
+        Consolidates leader election logic across Redis, FileLock, and single-worker modes.
+        Returns True if this instance should run health checks, False otherwise.
+
+        Returns:
+            bool: True if leader, False otherwise
+
+        Examples:
+            >>> service = GatewayService()
+            >>> service._redis_client = None
+            >>> # Single-worker mode: always leader
+            >>> import asyncio
+            >>> asyncio.run(service._check_is_leader())
+            True
+        """
+        if self._redis_client and settings.cache_type == "redis":
+            # Redis-based leader check (async, decode_responses=True returns strings)
+            current_leader = await self._redis_client.get(self._leader_key)
+            return current_leader == self._instance_id
+
+        elif settings.cache_type == "none":
+            # Single-worker mode: always leader
+            return True
+
+        else:
+            # FileLock mode: try to acquire lock with timeout=0 (non-blocking)
+            try:
+                self._file_lock.acquire(timeout=0)
+                return True
+            except Timeout:
+                return False
+
     async def _run_health_checks(self, user_email: str) -> None:
         """Run health checks periodically,
         Uses Redis or FileLock - for multiple workers.

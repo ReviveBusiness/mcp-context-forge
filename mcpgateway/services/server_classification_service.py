@@ -147,7 +147,7 @@ class ServerClassificationService:
                 else:
                     logger.debug(f"Not classification leader, skipping (instance={self._instance_id})")
 
-                await asyncio.sleep(settings.server_classification_refresh_interval)
+                await asyncio.sleep(settings.gateway_auto_refresh_interval)
 
             except asyncio.CancelledError:
                 logger.info("Classification loop cancelled")
@@ -341,7 +341,7 @@ class ServerClassificationService:
 
                 # Store metadata (expire after 2x classification interval)
                 metadata_json = orjson.dumps(asdict(result.metadata))
-                await pipe.set(self.CLASSIFICATION_METADATA_KEY, metadata_json, ex=int(settings.server_classification_refresh_interval * 2))
+                await pipe.set(self.CLASSIFICATION_METADATA_KEY, metadata_json, ex=int(settings.gateway_auto_refresh_interval * 2))
 
                 await pipe.set(self.CLASSIFICATION_TIMESTAMP_KEY, result.metadata.timestamp)
 
