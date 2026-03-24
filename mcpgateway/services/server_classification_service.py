@@ -424,7 +424,7 @@ class ServerClassificationService:
 
             last_poll = float(last_poll_str)
             now = time.time()
-            if not (0 < last_poll <= now + 60):
+            if not 0 < last_poll <= now + 60:
                 last_poll = 0.0  # treat as never polled; prevents manipulation via future timestamps
             elapsed = now - last_poll
 

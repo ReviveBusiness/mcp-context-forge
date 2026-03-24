@@ -4103,6 +4103,99 @@ async def test_should_poll_gateway_now_outside_tolerance(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_calculate_gateway_poll_offset_deterministic(monkeypatch):
+    """Same gateway UUID always produces the same offset (UUID.int is stable, no PYTHONHASHSEED)."""
+    import uuid
+
+    service = GatewayService()
+    service._health_check_interval = 60.0
+
+    gw_id = uuid.UUID("12345678-1234-5678-1234-567812345678")
+    offsets = {service._calculate_gateway_poll_offset(gw_id) for _ in range(10)}
+
+    # All 10 calls must return the identical value
+    assert len(offsets) == 1
+    offset = offsets.pop()
+    assert 0.0 <= offset < 60.0
+
+
+@pytest.mark.asyncio
+async def test_calculate_gateway_poll_offset_nil_uuid(monkeypatch):
+    """Nil UUID (all zeros) yields offset 0; modulo is safe."""
+    import uuid
+
+    service = GatewayService()
+    service._health_check_interval = 60.0
+
+    nil_uuid = uuid.UUID("00000000-0000-0000-0000-000000000000")
+    offset = service._calculate_gateway_poll_offset(nil_uuid)
+
+    # nil_uuid.int == 0 → 0 % 60 == 0
+    assert offset == 0.0
+
+
+@pytest.mark.asyncio
+async def test_calculate_gateway_poll_offset_different_uuids_differ(monkeypatch):
+    """Different UUIDs should (typically) produce different offsets."""
+    import uuid
+
+    service = GatewayService()
+    service._health_check_interval = 60.0
+
+    uuid1 = uuid.UUID("12345678-1234-5678-1234-567812345678")
+    uuid2 = uuid.UUID("87654321-4321-8765-4321-876543218765")
+
+    offset1 = service._calculate_gateway_poll_offset(uuid1)
+    offset2 = service._calculate_gateway_poll_offset(uuid2)
+
+    # The UUIDs are different enough that their offsets should differ
+    assert offset1 != offset2
+
+
+@pytest.mark.asyncio
+async def test_should_poll_gateway_now_tolerance_zero(monkeypatch):
+    """When staggered_polling_tolerance=0, only exact schedule time returns True."""
+    monkeypatch.setattr("mcpgateway.services.gateway_service.settings.staggered_polling_enabled", True)
+    monkeypatch.setattr("mcpgateway.services.gateway_service.settings.staggered_polling_tolerance", 0.0)
+
+    service = GatewayService()
+    service._health_check_interval = 60.0
+
+    mock_gateway = MagicMock()
+    fixed_offset = 30.0
+    with patch.object(service, "_calculate_gateway_poll_offset", return_value=fixed_offset):
+        current_cycle_start = 960.0
+        scheduled_time = current_cycle_start + fixed_offset  # 990.0
+
+        # Exactly at scheduled time: time_diff == 0 → 0 <= 0 → True
+        assert service._should_poll_gateway_now(mock_gateway, scheduled_time) is True
+        # Even 0.001s off → time_diff > 0 → False
+        assert service._should_poll_gateway_now(mock_gateway, scheduled_time + 0.001) is False
+        assert service._should_poll_gateway_now(mock_gateway, scheduled_time - 0.001) is False
+
+
+@pytest.mark.asyncio
+async def test_should_poll_gateway_now_offset_spans_cycle_boundary(monkeypatch):
+    """Poll window is always within the current cycle, not wrapped across boundary."""
+    monkeypatch.setattr("mcpgateway.services.gateway_service.settings.staggered_polling_enabled", True)
+    monkeypatch.setattr("mcpgateway.services.gateway_service.settings.staggered_polling_tolerance", 5.0)
+
+    service = GatewayService()
+    service._health_check_interval = 60.0
+
+    mock_gateway = MagicMock()
+    # Offset near end of cycle (55s) — scheduled time falls within current 60s window
+    fixed_offset = 55.0
+    with patch.object(service, "_calculate_gateway_poll_offset", return_value=fixed_offset):
+        current_cycle_start = 120.0  # 2 * 60
+        scheduled_time = current_cycle_start + fixed_offset  # 175.0
+
+        assert service._should_poll_gateway_now(mock_gateway, scheduled_time) is True
+        assert service._should_poll_gateway_now(mock_gateway, scheduled_time + 4.0) is True  # within tolerance
+        assert service._should_poll_gateway_now(mock_gateway, scheduled_time + 6.0) is False  # outside tolerance
+
+
+@pytest.mark.asyncio
 async def test_check_is_leader_redis_mode(monkeypatch):
     """Test _check_is_leader with Redis leader election."""
     monkeypatch.setattr("mcpgateway.services.gateway_service.settings.cache_type", "redis")

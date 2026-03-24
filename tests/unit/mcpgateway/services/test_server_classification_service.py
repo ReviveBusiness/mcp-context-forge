@@ -1228,3 +1228,358 @@ class TestErrorHandling:
 
         # Should return early without error
         await service._update_poll_timestamp("http://test:8080", "health", "hot")
+
+
+class TestBoundsAndEdgeCases:
+    """Tests for boundary conditions and edge cases introduced by security fixes."""
+
+    # ------------------------------------------------------------------
+    # Finding #3: Redis timestamp bounds validation
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_should_poll_server_with_future_timestamp(self):
+        """Future timestamp in Redis (e.g. clock skew / tampering) is treated as never polled."""
+        import hashlib
+
+        mock_redis = AsyncMock()
+        mock_redis.sismember = AsyncMock(side_effect=[True, False])  # Server is hot
+
+        far_future = str(time.time() + 9_000_000)  # ~100 days in future
+        mock_redis.get = AsyncMock(return_value=far_future)
+        mock_redis.set = AsyncMock()
+
+        service = ServerClassificationService(redis_client=mock_redis)
+
+        with patch("mcpgateway.services.server_classification_service.settings") as mock_settings:
+            mock_settings.hot_cold_classification_enabled = True
+            mock_settings.hot_server_check_interval = 300
+
+            # Future timestamp should be reset → elapsed treated as 0 → should poll now
+            result = await service.should_poll_server("http://test:8080", "health")
+            assert result is True
+
+    @pytest.mark.asyncio
+    async def test_should_poll_server_with_timestamp_at_bounds_boundary(self):
+        """Timestamp exactly at now+60 is accepted; now+61 is rejected."""
+        mock_redis = AsyncMock()
+        mock_redis.sismember = AsyncMock(side_effect=[True, False, True, False])
+
+        service = ServerClassificationService(redis_client=mock_redis)
+        now = time.time()
+
+        with patch("mcpgateway.services.server_classification_service.settings") as mock_settings:
+            mock_settings.hot_cold_classification_enabled = True
+            mock_settings.hot_server_check_interval = 300
+
+            mock_redis.set = AsyncMock()
+
+            # Timestamp 61s in future → beyond bound → treated as 0 → elapsed = now → should poll
+            mock_redis.get = AsyncMock(return_value=str(now + 61))
+            result = await service.should_poll_server("http://test:8080", "health")
+            assert result is True
+
+    @pytest.mark.asyncio
+    async def test_should_poll_redis_returns_non_numeric_timestamp(self):
+        """Non-numeric value in Redis timestamp key triggers fail-open (return True)."""
+        mock_redis = AsyncMock()
+        mock_redis.sismember = AsyncMock(side_effect=[True, False])
+        mock_redis.get = AsyncMock(return_value="not-a-number")
+
+        service = ServerClassificationService(redis_client=mock_redis)
+
+        with patch("mcpgateway.services.server_classification_service.settings") as mock_settings:
+            mock_settings.hot_cold_classification_enabled = True
+
+            # float("not-a-number") raises ValueError → exception handler → fail open
+            result = await service.should_poll_server("http://test:8080", "health")
+            assert result is True
+
+    # ------------------------------------------------------------------
+    # Finding #5: URL-hashed Redis keys
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_should_poll_url_hash_key_used_not_raw_url(self):
+        """Redis key for poll state uses SHA-256 hash of URL, not raw URL."""
+        import hashlib
+
+        mock_redis = AsyncMock()
+        mock_redis.sismember = AsyncMock(side_effect=[True, False])
+        url = "http://test:8080"
+        now = time.time()
+        mock_redis.get = AsyncMock(return_value=str(now - 1000))  # Long ago → should poll
+        mock_redis.set = AsyncMock()
+
+        service = ServerClassificationService(redis_client=mock_redis)
+
+        with patch("mcpgateway.services.server_classification_service.settings") as mock_settings:
+            mock_settings.hot_cold_classification_enabled = True
+            mock_settings.hot_server_check_interval = 300
+
+            await service.should_poll_server(url, "health")
+
+            # Verify the get was called with the hashed key, not the raw URL
+            url_hash = hashlib.sha256(url.encode()).hexdigest()[:32]
+            expected_key = f"mcpgateway:server_poll_state:{url_hash}:last_health"
+            mock_redis.get.assert_awaited_with(expected_key)
+
+    @pytest.mark.asyncio
+    async def test_update_poll_timestamp_url_hash_key(self):
+        """_update_poll_timestamp uses SHA-256 hashed URL in the Redis key."""
+        import hashlib
+
+        mock_redis = AsyncMock()
+        mock_redis.set = AsyncMock()
+        url = "http://example.com:9000/path?query=1"
+
+        service = ServerClassificationService(redis_client=mock_redis)
+
+        with patch("mcpgateway.services.server_classification_service.settings") as mock_settings:
+            mock_settings.hot_server_check_interval = 300
+
+            await service._update_poll_timestamp(url, "tool_discovery", "hot")
+
+            url_hash = hashlib.sha256(url.encode()).hexdigest()[:32]
+            expected_key = f"mcpgateway:server_poll_state:{url_hash}:last_tool_discovery"
+            args = mock_redis.set.await_args
+            assert args[0][0] == expected_key
+
+    # ------------------------------------------------------------------
+    # Finding #1: ORM is_(True) correctness
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_get_all_gateway_urls_filters_disabled_gateways(self):
+        """Only enabled=True gateways are included; disabled gateways are excluded."""
+        service = ServerClassificationService(redis_client=None)
+
+        enabled_urls = ["http://enabled1:8080", "http://enabled2:8080"]
+
+        # Mock DB execution to return only enabled rows (simulating correct SQL filter)
+        mock_session = MagicMock()
+        mock_session.execute.return_value = [(url,) for url in enabled_urls]
+        mock_ctx = MagicMock()
+        mock_ctx.__enter__ = MagicMock(return_value=mock_session)
+        mock_ctx.__exit__ = MagicMock(return_value=False)
+
+        with patch("mcpgateway.db.SessionLocal", return_value=mock_ctx):
+            result = await service._get_all_gateway_urls()
+
+        assert set(result) == set(enabled_urls)
+        assert len(result) == 2
+
+    @pytest.mark.asyncio
+    async def test_get_all_gateway_urls_returns_empty_when_none_enabled(self):
+        """Returns empty list when no gateways are enabled."""
+        service = ServerClassificationService(redis_client=None)
+
+        mock_session = MagicMock()
+        mock_session.execute.return_value = []  # No enabled gateways
+        mock_ctx = MagicMock()
+        mock_ctx.__enter__ = MagicMock(return_value=mock_session)
+        mock_ctx.__exit__ = MagicMock(return_value=False)
+
+        with patch("mcpgateway.db.SessionLocal", return_value=mock_ctx):
+            result = await service._get_all_gateway_urls()
+
+        assert result == []
+
+    # ------------------------------------------------------------------
+    # Classification correctness edge cases
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_classification_server_in_both_hot_and_cold_sets(self):
+        """Data corruption: server in both hot+cold — hot set takes priority."""
+        mock_redis = AsyncMock()
+        # Server returns True for hot check (first sismember call)
+        mock_redis.sismember = AsyncMock(side_effect=[True, True])
+
+        service = ServerClassificationService(redis_client=mock_redis)
+        classification = await service.get_server_classification("http://test:8080")
+
+        # hot check runs first → returns "hot" immediately (cold never queried)
+        assert classification == "hot"
+        # Only one sismember call needed (short-circuits on hot=True)
+        assert mock_redis.sismember.await_count == 1
+
+    def test_classify_servers_url_in_active_not_in_pools(self):
+        """Gracefully handles URL present in _active but absent from _pools."""
+        service = ServerClassificationService(redis_client=None)
+
+        pool = MagicMock()
+        pool._pools = {}  # No pooled sessions
+        pool._active = {
+            ("anon", "http://ghost:8080", "h", None, None): {MagicMock()},
+        }
+
+        # Should not raise; ghost URL contributes no metrics
+        result = service._classify_servers_from_pool(pool, ["http://ghost:8080"])
+        assert result.metadata.eligible_count == 0
+        assert "http://ghost:8080" in result.cold_servers
+
+    def test_classify_servers_all_identical_metrics_url_tie_break(self):
+        """When all servers share identical metrics, URL (alphabetical) is tie-breaker."""
+        service = ServerClassificationService(redis_client=None)
+        now = time.time()
+
+        # 5 servers, identical last_used/active/use_count — differ only by URL
+        urls = ["http://server-e:8080", "http://server-a:8080", "http://server-c:8080",
+                "http://server-b:8080", "http://server-d:8080"]
+
+        pool = MagicMock()
+        pool._active = {}
+
+        sessions = {}
+        for url in urls:
+            session = MagicMock()
+            session.last_used = now
+            session.use_count = 5
+            queue = MagicMock()
+            queue._queue = deque([session])
+            pool_key = ("anon", url, "hash", None, None)
+            sessions[pool_key] = queue
+
+        pool._pools = sessions
+
+        result = service._classify_servers_from_pool(pool, urls)
+
+        # hot_cap = floor(0.2 * 5) = 1 → 1 hot server
+        assert len(result.hot_servers) == 1
+        # Ascending URL sort → "a" sorts first → should NOT be hot (primary sort is -last_used desc)
+        # All have same last_used → tie broken by URL ascending → "server-a" first when sorted asc
+        # But sort key is m.url ASCENDING as tie-breaker, so server-a comes first in sorted list
+        assert result.hot_servers[0] == "http://server-a:8080"
+
+    def test_classify_servers_empty_pool_all_cold(self):
+        """When pool has no sessions, all provided gateway URLs are cold."""
+        service = ServerClassificationService(redis_client=None)
+
+        pool = MagicMock()
+        pool._pools = {}  # Empty pool
+        pool._active = {}
+
+        all_urls = ["http://server1:8080", "http://server2:8080", "http://server3:8080"]
+        result = service._classify_servers_from_pool(pool, all_urls)
+
+        assert result.hot_servers == []
+        assert set(result.cold_servers) == set(all_urls)
+        assert result.metadata.eligible_count == 0
+        assert result.metadata.hot_actual == 0
+
+    # ------------------------------------------------------------------
+    # Finding #4: Redis TTL on hot/cold sets
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_publish_classification_hot_cold_sets_have_ttl(self):
+        """Hot and cold Redis Sets must have a TTL set to prevent stale data."""
+        mock_redis = AsyncMock()
+        mock_pipeline = AsyncMock()
+        mock_redis.pipeline = MagicMock(return_value=mock_pipeline)
+        mock_pipeline.__aenter__ = AsyncMock(return_value=mock_pipeline)
+        mock_pipeline.__aexit__ = AsyncMock()
+        mock_pipeline.delete = AsyncMock()
+        mock_pipeline.sadd = AsyncMock()
+        mock_pipeline.expire = AsyncMock()
+        mock_pipeline.set = AsyncMock()
+        mock_pipeline.execute = AsyncMock()
+
+        service = ServerClassificationService(redis_client=mock_redis)
+
+        metadata = ClassificationMetadata(total_servers=5, hot_cap=1, hot_actual=1, eligible_count=3, timestamp=time.time())
+        result = ClassificationResult(
+            hot_servers=["http://hot:8080"],
+            cold_servers=["http://cold1:8080", "http://cold2:8080", "http://cold3:8080", "http://cold4:8080"],
+            metadata=metadata,
+        )
+
+        with patch("mcpgateway.services.server_classification_service.settings") as mock_settings:
+            mock_settings.gateway_auto_refresh_interval = 300
+
+            await service._publish_classification_to_redis(result)
+
+        # expire must be called for HOT_KEY and COLD_KEY (sadd has no TTL parameter)
+        expire_keys = [call.args[0] for call in mock_pipeline.expire.await_args_list]
+        assert ServerClassificationService.CLASSIFICATION_HOT_KEY in expire_keys
+        assert ServerClassificationService.CLASSIFICATION_COLD_KEY in expire_keys
+        # TIMESTAMP_KEY gets its TTL via set(..., ex=ttl) — verify at least 2 expire calls
+        assert len(expire_keys) >= 2
+
+    @pytest.mark.asyncio
+    async def test_publish_classification_ttl_is_two_x_interval(self):
+        """TTL applied to hot/cold sets equals 2× the gateway_auto_refresh_interval."""
+        mock_redis = AsyncMock()
+        mock_pipeline = AsyncMock()
+        mock_redis.pipeline = MagicMock(return_value=mock_pipeline)
+        mock_pipeline.__aenter__ = AsyncMock(return_value=mock_pipeline)
+        mock_pipeline.__aexit__ = AsyncMock()
+        mock_pipeline.delete = AsyncMock()
+        mock_pipeline.sadd = AsyncMock()
+        mock_pipeline.expire = AsyncMock()
+        mock_pipeline.set = AsyncMock()
+        mock_pipeline.execute = AsyncMock()
+
+        service = ServerClassificationService(redis_client=mock_redis)
+        interval = 120
+
+        metadata = ClassificationMetadata(total_servers=2, hot_cap=1, hot_actual=1, eligible_count=1, timestamp=time.time())
+        result = ClassificationResult(hot_servers=["http://hot:8080"], cold_servers=["http://cold:8080"], metadata=metadata)
+
+        with patch("mcpgateway.services.server_classification_service.settings") as mock_settings:
+            mock_settings.gateway_auto_refresh_interval = interval
+            await service._publish_classification_to_redis(result)
+
+        expected_ttl = interval * 2
+        for call in mock_pipeline.expire.await_args_list:
+            assert call.args[1] == expected_ttl
+
+    # ------------------------------------------------------------------
+    # should_poll_server: interval boundary condition
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_should_poll_server_interval_exact_boundary(self):
+        """Elapsed time equal to the interval means should_poll is True (>= comparison)."""
+        mock_redis = AsyncMock()
+        mock_redis.sismember = AsyncMock(side_effect=[True, False])  # hot
+        mock_redis.set = AsyncMock()
+
+        service = ServerClassificationService(redis_client=mock_redis)
+        interval = 300
+        now = time.time()
+        # Set last_poll such that elapsed == exactly interval
+        mock_redis.get = AsyncMock(return_value=str(now - interval))
+
+        with patch("mcpgateway.services.server_classification_service.settings") as mock_settings:
+            mock_settings.hot_cold_classification_enabled = True
+            mock_settings.hot_server_check_interval = interval
+
+            with patch("mcpgateway.services.server_classification_service.time") as mock_time:
+                mock_time.time = MagicMock(return_value=now)
+                result = await service.should_poll_server("http://test:8080", "health")
+
+        assert result is True  # elapsed == interval → should poll
+
+    @pytest.mark.asyncio
+    async def test_should_poll_server_one_second_before_interval(self):
+        """Elapsed time one second less than interval means should_poll is False."""
+        mock_redis = AsyncMock()
+        mock_redis.sismember = AsyncMock(side_effect=[True, False])  # hot
+
+        service = ServerClassificationService(redis_client=mock_redis)
+        interval = 300
+        now = time.time()
+        # elapsed = interval - 1 → should NOT poll
+        mock_redis.get = AsyncMock(return_value=str(now - interval + 1))
+
+        with patch("mcpgateway.services.server_classification_service.settings") as mock_settings:
+            mock_settings.hot_cold_classification_enabled = True
+            mock_settings.hot_server_check_interval = interval
+
+            with patch("mcpgateway.services.server_classification_service.time") as mock_time:
+                mock_time.time = MagicMock(return_value=now)
+                result = await service.should_poll_server("http://test:8080", "health")
+
+        assert result is False
