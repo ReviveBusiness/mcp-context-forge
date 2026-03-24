@@ -3351,10 +3351,14 @@ class GatewayService(BaseService):  # pylint: disable=too-many-instance-attribut
 
         # Hot/cold classification: Check if this server should be health-checked now
         if self._classification_service:
-            should_check = await self._classification_service.should_poll_server(gateway_url, "health")
-            if not should_check:
-                logger.debug(f"Skipping health check for {SecurityValidator.sanitize_log_message(gateway_name)}: " f"not yet due based on hot/cold classification")
-                return
+            try:
+                should_check = await self._classification_service.should_poll_server(gateway_url, "health")
+                if not should_check:
+                    logger.debug(f"Skipping health check for {SecurityValidator.sanitize_log_message(gateway_name)}: " f"not yet due based on hot/cold classification")
+                    return
+            except Exception as e:
+                # Fail open: proceed with health check if classification check fails
+                logger.warning(f"Classification check failed for {gateway_name}, proceeding with health check (fail-open): {e}")
 
         # Create span for individual gateway health check
         with create_span(
@@ -3556,9 +3560,14 @@ class GatewayService(BaseService):  # pylint: disable=too-many-instance-attribut
                     if settings.auto_refresh_servers:
                         # Hot/cold classification: Check if this server should have tools refreshed now
                         if self._classification_service:
-                            should_auto_refresh = await self._classification_service.should_poll_server(gateway_url, "tools")
-                            if not should_auto_refresh:
-                                logger.debug(f"Skipping auto-refresh for {SecurityValidator.sanitize_log_message(gateway_name)}: " f"not yet due based on hot/cold classification")
+                            try:
+                                should_auto_refresh = await self._classification_service.should_poll_server(gateway_url, "tools")
+                                if not should_auto_refresh:
+                                    logger.debug(f"Skipping auto-refresh for {SecurityValidator.sanitize_log_message(gateway_name)}: " f"not yet due based on hot/cold classification")
+                            except Exception as e:
+                                # Fail open: proceed with auto-refresh if classification check fails
+                                logger.warning(f"Classification check failed for {gateway_name}, proceeding with auto-refresh (fail-open): {e}")
+                                should_auto_refresh = True
                         else:
                             should_auto_refresh = True
 

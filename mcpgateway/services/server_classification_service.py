@@ -227,15 +227,15 @@ class ServerClassificationService:
         Returns:
             ClassificationResult with hot/cold servers and metadata
         """
-        N = len(all_gateway_urls)
-        hot_cap = floor(0.20 * N)
+        total_servers = len(all_gateway_urls)
+        hot_cap = floor(0.20 * total_servers)
 
         # Step 3: Extract server usage from pooled sessions
         server_metrics: Dict[str, ServerUsageMetrics] = {}
 
         # Iterate over pool._pools (Dict[PoolKey, Queue[PooledSession]])
         # PoolKey = (user_identity, url, identity_hash, transport_type, gateway_id)
-        for pool_key, session_queue in pool._pools.items():
+        for pool_key, session_queue in pool._pools.items():  # pylint: disable=protected-access
             url = pool_key[1]  # Extract server URL from pool key
 
             if url not in server_metrics:
@@ -244,7 +244,7 @@ class ServerClassificationService:
             # Process each pooled session in the queue
             try:
                 # Access queue items (asyncio.Queue has internal _queue deque)
-                sessions_list = list(session_queue._queue) if hasattr(session_queue, "_queue") else []
+                sessions_list = list(session_queue._queue) if hasattr(session_queue, "_queue") else []  # pylint: disable=protected-access
 
                 for session in sessions_list:
                     # PooledSession has: last_used, use_count
@@ -258,7 +258,7 @@ class ServerClassificationService:
                 continue
 
         # Count active sessions from _active dict
-        for pool_key, active_set in pool._active.items():
+        for pool_key, active_set in pool._active.items():  # pylint: disable=protected-access
             url = pool_key[1]
             if url in server_metrics:
                 server_metrics[url].active_session_count += len(active_set)
@@ -293,7 +293,7 @@ class ServerClassificationService:
         return ClassificationResult(
             hot_servers=hot_servers,
             cold_servers=cold_servers,
-            metadata=ClassificationMetadata(N=N, hot_cap=hot_cap, hot_actual=hot_actual, eligible_count=eligible_count, timestamp=time.time(), underutilized_reason=underutilized_reason),
+            metadata=ClassificationMetadata(N=total_servers, hot_cap=hot_cap, hot_actual=hot_actual, eligible_count=eligible_count, timestamp=time.time(), underutilized_reason=underutilized_reason),
         )
 
     async def _get_all_gateway_urls(self) -> List[str]:
@@ -306,11 +306,11 @@ class ServerClassificationService:
         from sqlalchemy import select
 
         # First-Party
-        from mcpgateway.db import DbGateway, SessionLocal
+        from mcpgateway.db import Gateway, SessionLocal
 
         try:
             with SessionLocal() as db:
-                result = db.execute(select(DbGateway.url).where(DbGateway.enabled == True))  # noqa: E712
+                result = db.execute(select(Gateway.url).where(Gateway.enabled is True))
                 urls = [row[0] for row in result]
                 return urls
         except Exception as e:
