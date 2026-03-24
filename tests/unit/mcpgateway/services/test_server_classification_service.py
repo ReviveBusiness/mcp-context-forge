@@ -97,14 +97,14 @@ class TestClassificationMetadata:
         """Test ClassificationMetadata required fields."""
         now = time.time()
         metadata = ClassificationMetadata(
-            N=10,
+            total_servers=10,
             hot_cap=2,
             hot_actual=2,
             eligible_count=5,
             timestamp=now,
         )
 
-        assert metadata.N == 10
+        assert metadata.total_servers == 10
         assert metadata.hot_cap == 2
         assert metadata.hot_actual == 2
         assert metadata.eligible_count == 5
@@ -114,7 +114,7 @@ class TestClassificationMetadata:
     def test_metadata_with_underutilization(self):
         """Test ClassificationMetadata with underutilization reason."""
         metadata = ClassificationMetadata(
-            N=10, hot_cap=2, hot_actual=1, eligible_count=1, timestamp=time.time(), underutilized_reason="Only 1 servers have pooled sessions, below hot_cap=2"
+            total_servers=10, hot_cap=2, hot_actual=1, eligible_count=1, timestamp=time.time(), underutilized_reason="Only 1 servers have pooled sessions, below hot_cap=2"
         )
 
         assert metadata.hot_actual == 1
@@ -127,13 +127,13 @@ class TestClassificationResult:
 
     def test_classification_result_structure(self):
         """Test ClassificationResult structure."""
-        metadata = ClassificationMetadata(N=5, hot_cap=1, hot_actual=1, eligible_count=3, timestamp=time.time())
+        metadata = ClassificationMetadata(total_servers=5, hot_cap=1, hot_actual=1, eligible_count=3, timestamp=time.time())
 
         result = ClassificationResult(hot_servers=["http://hot1:8080"], cold_servers=["http://cold1:8080", "http://cold2:8080", "http://cold3:8080", "http://cold4:8080"], metadata=metadata)
 
         assert len(result.hot_servers) == 1
         assert len(result.cold_servers) == 4
-        assert result.metadata.N == 5
+        assert result.metadata.total_servers == 5
         assert set(result.hot_servers + result.cold_servers) == {
             "http://hot1:8080",
             "http://cold1:8080",
@@ -201,7 +201,7 @@ class TestClassificationLogic:
         result = service._classify_servers_from_pool(pool, all_urls)
 
         # Should have 1 hot server (floor(5 * 0.20) = 1)
-        assert result.metadata.N == 5
+        assert result.metadata.total_servers == 5
         assert result.metadata.hot_cap == 1
         assert result.metadata.hot_actual == 1
         assert result.metadata.eligible_count == 5
@@ -332,7 +332,7 @@ class TestClassificationLogic:
         result = service._classify_servers_from_pool(pool, all_urls)
 
         # No hot servers, all cold
-        assert result.metadata.N == 3
+        assert result.metadata.total_servers == 3
         assert result.metadata.hot_cap == 0  # floor(3 * 0.20) = 0
         assert result.metadata.eligible_count == 0
         assert len(result.hot_servers) == 0
@@ -359,7 +359,7 @@ class TestClassificationLogic:
         result = service._classify_servers_from_pool(pool, all_urls)
 
         # hot_cap = floor(10 * 0.20) = 2, but only 2 eligible
-        assert result.metadata.N == 10
+        assert result.metadata.total_servers == 10
         assert result.metadata.hot_cap == 2
         assert result.metadata.eligible_count == 2
         assert result.metadata.hot_actual == 2
@@ -714,7 +714,7 @@ class TestRedisStateManagement:
 
         service = ServerClassificationService(redis_client=mock_redis)
 
-        metadata = ClassificationMetadata(N=5, hot_cap=1, hot_actual=1, eligible_count=3, timestamp=time.time())
+        metadata = ClassificationMetadata(total_servers=5, hot_cap=1, hot_actual=1, eligible_count=3, timestamp=time.time())
         result = ClassificationResult(hot_servers=["http://hot1:8080"], cold_servers=["http://cold1:8080", "http://cold2:8080", "http://cold3:8080", "http://cold4:8080"], metadata=metadata)
 
         with patch("mcpgateway.services.server_classification_service.settings") as mock_settings:
@@ -747,7 +747,7 @@ class TestRedisStateManagement:
 
         service = ServerClassificationService(redis_client=mock_redis)
 
-        metadata = ClassificationMetadata(N=2, hot_cap=0, hot_actual=0, eligible_count=0, timestamp=time.time())
+        metadata = ClassificationMetadata(total_servers=2, hot_cap=0, hot_actual=0, eligible_count=0, timestamp=time.time())
         result = ClassificationResult(hot_servers=[], cold_servers=["http://cold1:8080", "http://cold2:8080"], metadata=metadata)
 
         with patch("mcpgateway.services.server_classification_service.settings") as mock_settings:
