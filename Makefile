@@ -7330,7 +7330,7 @@ detect-secrets-audit:               ## 🔎  detect-secrets audit for reviewing 
 	@echo "🔎 Running detect-secrets audit..."
 	@/bin/bash -c "source $(VENV_DIR)/bin/activate && detect-secrets audit .secrets.baseline"
 
-.PHONY: detect-secrets-audit
+.PHONY: detect-secrets-hook
 detect-secrets-hook:               ## 🔎  detect-secrets pre-commit hook equivalent
 	@echo "🔎 Running detect-secrets-hook pre-commit hook equivalent..."
 	@/bin/bash -c "source $(VENV_DIR)/bin/activate && detect-secrets-hook --baseline .secrets.baseline --use-all-plugins --fail-on-unaudited"
