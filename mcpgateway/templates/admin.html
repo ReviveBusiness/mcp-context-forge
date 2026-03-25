@@ -345,7 +345,7 @@
       crossorigin="anonymous">
     </script>
     {% endif %}
-    <script src="{{ root_path }}/static/admin.js"></script>
+    <script src="{{ root_path }}/static/admin.js?v=20260325"></script>
     {% if is_admin %}
     <script src="{{ root_path }}/static/gantt-chart.js?v=3"></script>
     <script src="{{ root_path }}/static/flame-graph.js?v=1"></script>
@@ -15165,6 +15165,9 @@ class="fixed z-40 inset-0 bg-gray-800 bg-opacity-75 flex items-center justify-ce
       // Those functions properly fetch ALL IDs from the server and maintain state,
       // so items that load via pagination are also included in the selection.
       // The handlers are attached via HTMX's hx-on::after-swap attribute.
+
+      // NOTE: Tool testing and invocation functions (closeModal, invokeTool, runToolTest)
+      // are now defined in admin.js for better maintainability.
 
       // Download sample JSON for bulk import
       function downloadSampleJSON() {

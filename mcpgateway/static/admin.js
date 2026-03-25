@@ -14258,13 +14258,17 @@ async function runToolAgentValidation(testIndex) {
 }
 
 async function runToolTest() {
+    console.log("runToolTest called, AppState.currentTestTool:", AppState.currentTestTool);
     const form = safeGetElement("tool-test-form");
     const loadingElement = safeGetElement("tool-test-loading");
     const resultContainer = safeGetElement("tool-test-result");
     const runButton = document.querySelector('button[onclick="runToolTest()"]');
 
     if (!form || !AppState.currentTestTool) {
-        console.error("Tool test form or current tool not found");
+        console.error("Tool test form or current tool not found", {
+            form: !!form,
+            currentTestTool: AppState.currentTestTool
+        });
         showErrorMessage("Tool test form not available");
         return;
     }
@@ -34068,3 +34072,153 @@ document.addEventListener("htmx:afterSettle", function (_evt) {
         }
     }
 });
+
+// ===================================================================
+// TOOL INVOCATION (opens test modal)
+// ===================================================================
+
+/**
+ * Open tool test modal and fetch tool details from API
+ * This is called by the "Invoke" button in the Tools table
+ * @param {string} toolName - The name of the tool to test
+ */
+async function invokeTool(toolName) {
+    console.log("invokeTool called with toolName:", toolName);
+    try {
+        // Fetch tool details from the API
+        const headers = {
+            Accept: "application/json",
+            "Content-Type": "application/json",
+        };
+
+        // Add JWT token if available
+        const jwtToken = getCookie("jwt_token");
+        if (jwtToken) {
+            headers.Authorization = "Bearer " + jwtToken;
+        }
+
+        const response = await fetch(
+            window.ROOT_PATH + "/admin/tools/" + encodeURIComponent(toolName),
+            { headers },
+        );
+
+        if (!response.ok) {
+            throw new Error(`Failed to fetch tool details: ${response.status}`);
+        }
+
+        const tool = await response.json();
+
+        // IMPORTANT: Store tool details in AppState for runToolTest to access
+        AppState.currentTestTool = tool;
+        console.log("AppState.currentTestTool set to:", tool.name, tool);
+
+        // Store input schema in registry if it exists
+        if (typeof toolInputSchemaRegistry === "object" && toolInputSchemaRegistry !== null) {
+            toolInputSchemaRegistry.inputSchema = tool.input_schema;
+        }
+
+        // Populate modal title and description
+        document.getElementById("tool-test-modal-title").textContent =
+            `Test Tool: ${tool.displayName || tool.name}`;
+        document.getElementById("tool-test-modal-description").textContent =
+            tool.description || "";
+
+        // Clear previous results
+        document.getElementById("tool-test-result").innerHTML = "";
+
+        // Show the modal
+        document.getElementById("tool-test-modal").classList.remove("hidden");
+
+        // Generate form fields based on input schema
+        // This is handled by existing renderToolTestForm function if available
+        if (typeof renderToolTestForm === "function") {
+            renderToolTestForm(tool);
+        } else {
+            // Fallback: simple form generation
+            const formFields = document.getElementById("tool-test-form-fields");
+            formFields.innerHTML = "";
+
+            if (tool.input_schema && tool.input_schema.properties) {
+                const properties = tool.input_schema.properties;
+                const required = tool.input_schema.required || [];
+
+                for (const [key, schema] of Object.entries(properties)) {
+                    const isRequired = required.includes(key);
+                    const fieldDiv = document.createElement("div");
+
+                    const label = document.createElement("label");
+                    label.className =
+                        "block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1";
+                    label.textContent = `${key}${isRequired ? " *" : ""}`;
+                    fieldDiv.appendChild(label);
+
+                    if (schema.description) {
+                        const desc = document.createElement("p");
+                        desc.className =
+                            "text-xs text-gray-500 dark:text-gray-400 mb-1";
+                        desc.textContent = schema.description;
+                        fieldDiv.appendChild(desc);
+                    }
+
+                    let input;
+                    if (schema.enum) {
+                        input = document.createElement("select");
+                        input.className =
+                            "mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 dark:bg-gray-700 dark:text-gray-200";
+                        schema.enum.forEach((option) => {
+                            const opt = document.createElement("option");
+                            opt.value = option;
+                            opt.textContent = option;
+                            if (option === schema.default) {
+                                opt.selected = true;
+                            }
+                            input.appendChild(opt);
+                        });
+                    } else if (schema.type === "boolean") {
+                        input = document.createElement("input");
+                        input.type = "checkbox";
+                        input.className =
+                            "h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300 rounded dark:bg-gray-700";
+                        if (schema.default === true) {
+                            input.checked = true;
+                        }
+                    } else if (
+                        schema.type === "number" ||
+                        schema.type === "integer"
+                    ) {
+                        input = document.createElement("input");
+                        input.type = "number";
+                        input.className =
+                            "mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 dark:bg-gray-700 dark:text-gray-200";
+                        if (schema.default !== undefined) {
+                            input.value = schema.default;
+                        }
+                    } else {
+                        input = document.createElement("input");
+                        input.type = "text";
+                        input.className =
+                            "mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 dark:bg-gray-700 dark:text-gray-200";
+                        if (schema.default !== undefined) {
+                            input.value = schema.default;
+                        }
+                    }
+
+                    input.name = key;
+                    if (isRequired) {
+                        input.required = true;
+                    }
+
+                    fieldDiv.appendChild(input);
+                    formFields.appendChild(fieldDiv);
+                }
+            } else {
+                formFields.innerHTML =
+                    '<p class="text-sm text-gray-500 dark:text-gray-400">This tool has no input parameters.</p>';
+            }
+        }
+    } catch (error) {
+        console.error("Error invoking tool:", error);
+        alert("Failed to open tool test modal: " + error.message);
+    }
+}
+window.invokeTool = invokeTool;
