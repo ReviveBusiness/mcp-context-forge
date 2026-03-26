@@ -3758,22 +3758,20 @@ class ToolService(BaseService):
                             else:
                                 raise ToolInvocationError(f"Required URL parameter '{param}' not found in arguments")
 
-                    # --- Extract query params from URL ---
-                    parsed = urlparse(final_url)
-                    final_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
-
-                    query_params = {k: v[0] for k, v in parse_qs(parsed.query).items()}
-
-                    # Merge leftover payload + query params
-                    payload.update(query_params)
-
                     # Use the tool's request_type rather than defaulting to POST (using local variable)
                     method = tool_request_type.upper() if tool_request_type else "POST"
                     rest_start_time = time.time()
                     try:
                         if method == "GET":
+                            # For GET: Extract query params from URL and merge with input arguments
+                            parsed = urlparse(final_url)
+                            final_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+                            query_params = {k: v[0] for k, v in parse_qs(parsed.query).items()}
+                            payload.update(query_params)
                             response = await asyncio.wait_for(self._http_client.get(final_url, params=payload, headers=headers), timeout=effective_timeout)
                         else:
+                            # For POST/PUT/PATCH/DELETE: Preserve query params in URL, only send input args in body
+                            # This is critical for signed URLs (Azure SAS, AWS presigned URLs, webhook signatures, etc.)
                             response = await asyncio.wait_for(self._http_client.request(method, final_url, json=payload, headers=headers), timeout=effective_timeout)
                     except (asyncio.TimeoutError, httpx.TimeoutException):
                         rest_elapsed_ms = (time.time() - rest_start_time) * 1000
@@ -3825,7 +3823,8 @@ class ToolService(BaseService):
                     elif response.status_code not in [200, 201, 202, 206]:
                         try:
                             result = response.json()
-                        except orjson.JSONDecodeError:
+                        except Exception:
+                            # Catch any JSON decode errors (httpx uses json.JSONDecodeError, not orjson)
                             result = {"response_text": response.text} if response.text else {}
                         error_val = result["error"] if "error" in result else "Tool error encountered"
                         tool_result = ToolResult(
@@ -3836,7 +3835,8 @@ class ToolService(BaseService):
                     else:
                         try:
                             result = response.json()
-                        except orjson.JSONDecodeError:
+                        except Exception:
+                            # Catch any JSON decode errors (httpx uses json.JSONDecodeError, not orjson)
                             result = {"response_text": response.text} if response.text else {}
                         logger.debug(f"REST API tool response: {result}")
                         filtered_response = extract_using_jq(result, tool_jsonpath_filter)
@@ -4483,7 +4483,11 @@ class ToolService(BaseService):
                         raise ToolTimeoutError(f"Tool invocation timed out after {effective_timeout}s")
 
                     if http_response.status_code == 200:
-                        response_data = http_response.json()
+                        try:
+                            response_data = http_response.json()
+                        except Exception:
+                            # Non-JSON response (HTML, plain text, etc.)
+                            response_data = http_response.text
                         if isinstance(response_data, dict) and "response" in response_data:
                             val = response_data["response"]
                             content = [TextContent(type="text", text=val if isinstance(val, str) else orjson.dumps(val).decode())]
@@ -4543,7 +4547,13 @@ class ToolService(BaseService):
                 if isinstance(e, BaseExceptionGroup):
                     while isinstance(root_cause, BaseExceptionGroup) and root_cause.exceptions:
                         root_cause = root_cause.exceptions[0]
+
+                # Extract error message with fallback for httpx exceptions
                 error_message = str(root_cause)
+                if not error_message and hasattr(root_cause, 'response'):
+                    # httpx.HTTPStatusError may have empty str() but has response attribute
+                    response = root_cause.response
+                    error_message = f"HTTP {response.status_code} {response.reason_phrase} for url '{response.url}'"
                 # Set span error status
                 if span:
                     span.set_attribute("error", True)
@@ -5603,7 +5613,11 @@ class ToolService(BaseService):
         http_response = await client.post(endpoint_url, json=request_data, headers=headers)
 
         if http_response.status_code == 200:
-            return http_response.json()
+            try:
+                return http_response.json()
+            except Exception:
+                # Non-JSON response (HTML, plain text, etc.)
+                return http_response.text
 
         raise Exception(f"HTTP {http_response.status_code}: {http_response.text}")
 
