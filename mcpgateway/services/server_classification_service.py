@@ -108,7 +108,7 @@ class ServerClassificationService:
         self._redis = redis_client
         self._classification_task: Optional[asyncio.Task] = None
         self._instance_id = f"classifier_{id(self)}"
-        self._leader_ttl = 90  # seconds
+        self._leader_ttl = int(settings.gateway_auto_refresh_interval * 1.5)  # Lock TTL must outlive classification interval
         self._running = False
         self._error_backoff_seconds: float = 30.0  # Back off duration on loop errors (override in tests)
 
@@ -248,7 +248,11 @@ class ServerClassificationService:
             # Process each pooled session in the queue
             try:
                 # Access queue items (asyncio.Queue has internal _queue deque)
-                sessions_list = list(session_queue._queue) if hasattr(session_queue, "_queue") else []  # pylint: disable=protected-access
+                if hasattr(session_queue, "_queue"):
+                    sessions_list = list(session_queue._queue)  # pylint: disable=protected-access
+                else:
+                    logger.warning(f"Queue for {url} missing _queue attribute, skipping session metrics")
+                    sessions_list = []
 
                 for session in sessions_list:
                     # PooledSession has: last_used, use_count
