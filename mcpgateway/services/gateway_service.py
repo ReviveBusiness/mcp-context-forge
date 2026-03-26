@@ -3555,6 +3555,13 @@ class GatewayService(BaseService):  # pylint: disable=too-many-instance-attribut
                     except Exception as update_error:
                         logger.warning(f"Failed to update last_seen for gateway {gateway_name}: {update_error}")
 
+                    # Mark health poll completed (after successful health check)
+                    if self._classification_service:
+                        try:
+                            await self._classification_service.mark_poll_completed(gateway_url, "health")
+                        except Exception:
+                            pass  # Non-critical: best-effort timestamp update
+
                     # Auto-refresh tools/resources/prompts if enabled
                     should_auto_refresh = False
                     if settings.auto_refresh_servers:
@@ -3606,6 +3613,12 @@ class GatewayService(BaseService):  # pylint: disable=too-many-instance-attribut
                                             pre_auth_headers=headers if headers else None,
                                             gateway=gateway,
                                         )
+                                        # Mark tools poll completed after successful refresh
+                                        if self._classification_service:
+                                            try:
+                                                await self._classification_service.mark_poll_completed(gateway_url, "tool_discovery")
+                                            except Exception:
+                                                pass  # Non-critical: best-effort timestamp update
                                 else:
                                     logger.debug(f"Skipping auto-refresh for {gateway_name}: lock held (likely manual refresh in progress)")
                         except Exception as refresh_error:

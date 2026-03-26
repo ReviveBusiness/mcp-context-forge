@@ -422,8 +422,7 @@ class ServerClassificationService:
             last_poll_str = await self._redis.get(last_poll_key)
 
             if last_poll_str is None:
-                # Never polled, should poll now
-                await self._update_poll_timestamp(url, poll_type, classification)
+                # Never polled, should poll now (caller must call mark_poll_completed after)
                 return True
 
             last_poll = float(last_poll_str)
@@ -437,29 +436,29 @@ class ServerClassificationService:
 
             should_poll = elapsed >= interval
 
-            if should_poll:
-                await self._update_poll_timestamp(url, poll_type, classification)
-
             return should_poll
 
         except Exception as e:
             logger.warning(f"Error checking poll status for {url}: {e}")
             return True  # Fail open: poll on error
 
-    async def _update_poll_timestamp(self, url: str, poll_type: str, classification: str) -> None:
-        """Update last poll timestamp in Redis.
+    async def mark_poll_completed(self, url: str, poll_type: Literal["health", "tool_discovery"]) -> None:
+        """Record that a poll was actually performed.
+
+        Call this AFTER the poll/refresh succeeds, not at decision time.
+        This prevents wasting poll slots when downstream throttling skips the refresh.
 
         Args:
             url: Server URL
             poll_type: Type of poll
-            classification: Server classification (hot/cold)
         """
         if not self._redis:
             return
 
-        interval = settings.hot_server_check_interval if classification == "hot" else settings.cold_server_check_interval
-
         try:
+            classification = await self.get_server_classification(url)
+            interval = settings.hot_server_check_interval if classification == "hot" else settings.cold_server_check_interval
+
             url_hash = hashlib.sha256(url.encode()).hexdigest()[:32]
             last_poll_key = self.POLL_STATE_KEY_TEMPLATE.format(url_hash=url_hash, poll_type=poll_type)
             await self._redis.set(last_poll_key, time.time(), ex=int(interval * 2))  # Expire after 2x interval

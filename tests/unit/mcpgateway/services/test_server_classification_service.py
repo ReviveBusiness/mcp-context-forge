@@ -633,8 +633,8 @@ class TestPollingDecisions:
             should_poll = await service.should_poll_server("http://test:8080", "health")
 
             assert should_poll is True
-            # Should update timestamp
-            mock_redis.set.assert_awaited()
+            # Timestamp update is deferred to mark_poll_completed, not done here
+            mock_redis.set.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_should_poll_hot_server_interval_not_elapsed(self):
@@ -676,6 +676,8 @@ class TestPollingDecisions:
             should_poll = await service.should_poll_server("http://test:8080", "health")
 
             assert should_poll is True
+            # Timestamp update is deferred to mark_poll_completed, not done here
+            mock_redis.set.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_should_poll_cold_server_interval_not_elapsed(self):
@@ -715,8 +717,8 @@ class TestPollingDecisions:
             should_poll = await service.should_poll_server("http://test:8080", "health")
 
             assert should_poll is True
-            # Should set initial timestamp
-            mock_redis.set.assert_awaited()
+            # Timestamp update is deferred to mark_poll_completed, not done here
+            mock_redis.set.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_should_poll_different_poll_types_independent(self):
@@ -765,6 +767,34 @@ class TestPollingDecisions:
 
             # Should fail open and allow polling
             assert should_poll is True
+
+    @pytest.mark.asyncio
+    async def test_mark_poll_completed_updates_redis(self):
+        """Test mark_poll_completed writes timestamp to Redis after actual poll."""
+        mock_redis = AsyncMock()
+        # Server is hot
+        mock_redis.sismember = AsyncMock(side_effect=[True, False])
+        mock_redis.set = AsyncMock()
+
+        service = ServerClassificationService(redis_client=mock_redis)
+
+        with patch("mcpgateway.services.server_classification_service.settings") as mock_settings:
+            mock_settings.hot_cold_classification_enabled = True
+            mock_settings.hot_server_check_interval = 300
+
+            await service.mark_poll_completed("http://test:8080", "health")
+
+            # Should write timestamp to Redis
+            mock_redis.set.assert_awaited_once()
+            call_args = mock_redis.set.await_args
+            assert call_args[1]["ex"] == 600  # 2x hot interval
+
+    @pytest.mark.asyncio
+    async def test_mark_poll_completed_no_redis(self):
+        """Test mark_poll_completed is a no-op without Redis."""
+        service = ServerClassificationService(redis_client=None)
+        # Should not raise
+        await service.mark_poll_completed("http://test:8080", "health")
 
 
 class TestRedisStateManagement:
@@ -872,17 +902,20 @@ class TestRedisStateManagement:
         assert classification is None
 
     @pytest.mark.asyncio
-    async def test_update_poll_timestamp(self):
-        """Test poll timestamp update in Redis."""
+    async def test_mark_poll_completed_updates_timestamp(self):
+        """Test mark_poll_completed writes timestamp to Redis."""
         mock_redis = AsyncMock()
+        # Server is hot
+        mock_redis.sismember = AsyncMock(side_effect=[True, False])
         mock_redis.set = AsyncMock()
 
         service = ServerClassificationService(redis_client=mock_redis)
 
         with patch("mcpgateway.services.server_classification_service.settings") as mock_settings:
+            mock_settings.hot_cold_classification_enabled = True
             mock_settings.hot_server_check_interval = 300
 
-            await service._update_poll_timestamp("http://test:8080", "health", "hot")
+            await service.mark_poll_completed("http://test:8080", "health")
 
             # Should set timestamp with 2x interval expiry
             mock_redis.set.assert_awaited_once()
@@ -1211,23 +1244,28 @@ class TestErrorHandling:
             assert result is True
 
     @pytest.mark.asyncio
-    async def test_update_poll_timestamp_handles_redis_error(self):
-        """Test _update_poll_timestamp handles Redis errors gracefully."""
+    async def test_mark_poll_completed_handles_redis_error(self):
+        """Test mark_poll_completed handles Redis errors gracefully."""
         mock_redis = AsyncMock()
+        mock_redis.sismember = AsyncMock(side_effect=[True, False])  # hot server
         mock_redis.set = AsyncMock(side_effect=Exception("Redis error"))
 
         service = ServerClassificationService(redis_client=mock_redis)
 
-        # Should not raise exception, just log warning
-        await service._update_poll_timestamp("http://test:8080", "health", "hot")
+        with patch("mcpgateway.services.server_classification_service.settings") as mock_settings:
+            mock_settings.hot_cold_classification_enabled = True
+            mock_settings.hot_server_check_interval = 300
+
+            # Should not raise exception, just log warning
+            await service.mark_poll_completed("http://test:8080", "health")
 
     @pytest.mark.asyncio
-    async def test_update_poll_timestamp_with_no_redis(self):
-        """Test _update_poll_timestamp returns early when Redis is None."""
+    async def test_mark_poll_completed_with_no_redis(self):
+        """Test mark_poll_completed returns early when Redis is None."""
         service = ServerClassificationService(redis_client=None)
 
         # Should return early without error
-        await service._update_poll_timestamp("http://test:8080", "health", "hot")
+        await service.mark_poll_completed("http://test:8080", "health")
 
 
 class TestBoundsAndEdgeCases:
@@ -1325,20 +1363,22 @@ class TestBoundsAndEdgeCases:
             mock_redis.get.assert_awaited_with(expected_key)
 
     @pytest.mark.asyncio
-    async def test_update_poll_timestamp_url_hash_key(self):
-        """_update_poll_timestamp uses SHA-256 hashed URL in the Redis key."""
+    async def test_mark_poll_completed_url_hash_key(self):
+        """mark_poll_completed uses SHA-256 hashed URL in the Redis key."""
         import hashlib
 
         mock_redis = AsyncMock()
+        mock_redis.sismember = AsyncMock(side_effect=[True, False])  # hot server
         mock_redis.set = AsyncMock()
         url = "http://example.com:9000/path?query=1"
 
         service = ServerClassificationService(redis_client=mock_redis)
 
         with patch("mcpgateway.services.server_classification_service.settings") as mock_settings:
+            mock_settings.hot_cold_classification_enabled = True
             mock_settings.hot_server_check_interval = 300
 
-            await service._update_poll_timestamp(url, "tool_discovery", "hot")
+            await service.mark_poll_completed(url, "tool_discovery")
 
             url_hash = hashlib.sha256(url.encode()).hexdigest()[:32]
             expected_key = f"mcpgateway:server_poll_state:{url_hash}:last_tool_discovery"
