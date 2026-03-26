@@ -7321,17 +7321,17 @@ gitleaks:                           ## 🔍 Scan for secrets in git history
 	@echo "💡 To scan git history: gitleaks detect --source . --log-opts='--all'"
 
 .PHONY: detect-secrets-scan
-detect-secrets-scan:                ## 🔍  detect-secrets scan for secrets in repository
+detect-secrets-scan: install-dev             ## 🔍  detect-secrets scan for secrets in repository
 	@echo "🔍 Running detect-secrets scan..."
 	@/bin/bash -c "source $(VENV_DIR)/bin/activate && detect-secrets scan --update .secrets.baseline --use-all-plugins"
 
 .PHONY: detect-secrets-audit
-detect-secrets-audit:               ## 🔎  detect-secrets audit for reviewing findings
+detect-secrets-audit: install-dev            ## 🔎  detect-secrets audit for reviewing findings
 	@echo "🔎 Running detect-secrets audit..."
 	@/bin/bash -c "source $(VENV_DIR)/bin/activate && detect-secrets audit .secrets.baseline"
 
 .PHONY: detect-secrets-hook
-detect-secrets-hook:               ## 🔎  detect-secrets pre-commit hook equivalent
+detect-secrets-hook: install-dev              ## 🔎  detect-secrets pre-commit hook equivalent
 	@echo "🔎 Running detect-secrets-hook pre-commit hook equivalent..."
 	@/bin/bash -c "source $(VENV_DIR)/bin/activate && detect-secrets-hook --baseline .secrets.baseline --use-all-plugins --fail-on-unaudited"
 
