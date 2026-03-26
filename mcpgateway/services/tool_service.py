@@ -3838,7 +3838,10 @@ class ToolService(BaseService):
                         try:
                             result = response.json()
                         except Exception:
-                            # Catch any JSON decode errors (httpx uses json.JSONDecodeError, not orjson)
+                            # Catch any JSON parsing failures and encoding issues
+                            # REST APIs may return HTML error pages, plain text, XML, or have encoding problems
+                            # httpx uses json.JSONDecodeError (not orjson), but we also catch UnicodeDecodeError, etc.
+                            # Graceful fallback: return raw text for non-JSON error responses
                             result = {"response_text": response.text} if response.text else {}
                         error_val = result["error"] if "error" in result else "Tool error encountered"
                         tool_result = ToolResult(
@@ -3850,7 +3853,10 @@ class ToolService(BaseService):
                         try:
                             result = response.json()
                         except Exception:
-                            # Catch any JSON decode errors (httpx uses json.JSONDecodeError, not orjson)
+                            # Catch any JSON parsing failures and encoding issues
+                            # REST APIs may return HTML, plain text, XML, or have encoding problems
+                            # httpx uses json.JSONDecodeError (not orjson), but we also catch UnicodeDecodeError, etc.
+                            # Graceful fallback: return raw text for non-JSON responses
                             result = {"response_text": response.text} if response.text else {}
                         logger.debug(f"REST API tool response: {result}")
                         filtered_response = extract_using_jq(result, tool_jsonpath_filter)
@@ -4500,7 +4506,10 @@ class ToolService(BaseService):
                         try:
                             response_data = http_response.json()
                         except Exception:
-                            # Non-JSON response (HTML, plain text, etc.)
+                            # Catch any JSON parsing failures and encoding issues
+                            # Streamable HTTP endpoints may return HTML, plain text, or have encoding problems
+                            # httpx uses json.JSONDecodeError, but we also catch UnicodeDecodeError, etc.
+                            # Graceful fallback: return raw text for non-JSON responses
                             response_data = http_response.text
                         if isinstance(response_data, dict) and "response" in response_data:
                             val = response_data["response"]
@@ -5630,7 +5639,10 @@ class ToolService(BaseService):
             try:
                 return http_response.json()
             except Exception:
-                # Non-JSON response (HTML, plain text, etc.)
+                # Catch any JSON parsing failures and encoding issues
+                # A2A agents may return HTML, plain text, or have encoding problems
+                # httpx uses json.JSONDecodeError, but we also catch UnicodeDecodeError, etc.
+                # Graceful fallback: return raw text for non-JSON responses
                 return http_response.text
 
         raise Exception(f"HTTP {http_response.status_code}: {http_response.text}")
