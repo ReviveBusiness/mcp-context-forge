@@ -421,7 +421,6 @@ def extract_using_jq(data, jq_filter=""):
         return data
 
     # Check if it looks like an email or other non-jq data
-    import re
     if re.match(r"^[^.\[\]|]+@[^.\[\]|]+\.[^.\[\]|]+$", jq_filter_str):
         # Looks like an email address, treat as empty filter
         logger.warning(f"Invalid jq filter detected (appears to be email): {jq_filter_str}. Treating as empty filter.")
@@ -4565,7 +4564,7 @@ class ToolService(BaseService):
 
                 # Extract error message with fallback for httpx exceptions
                 error_message = str(root_cause)
-                if not error_message and hasattr(root_cause, 'response'):
+                if not error_message and hasattr(root_cause, "response"):
                     # httpx.HTTPStatusError may have empty str() but has response attribute
                     response = root_cause.response
                     error_message = f"HTTP {response.status_code} {response.reason_phrase} for url '{response.url}'"
