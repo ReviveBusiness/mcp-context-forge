@@ -5113,6 +5113,74 @@ class RegisteredOAuthClient(Base):
     __table_args__ = (Index("idx_gateway_issuer", "gateway_id", "issuer", unique=True),)
 
 
+# ---------------------------------------------------------------------------
+# OAuth Authorization Server Models
+# ---------------------------------------------------------------------------
+
+
+class OAuthASClient(Base):
+    """OAuth Authorization Server client registration.
+
+    Stores client credentials for the gateway's built-in OAuth AS mode.
+    Distinguished from RegisteredOAuthClient which stores outbound DCR
+    credentials obtained from upstream Authorization Servers.
+    """
+
+    __tablename__ = "oauth_as_clients"
+
+    # Primary key
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+
+    # Client identity
+    client_id: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
+    client_name: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    # Credentials (Argon2 hashed)
+    client_secret_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    previous_secret_hash: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    previous_secret_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Authorization
+    scopes: Mapped[List[str]] = mapped_column(JSON, nullable=False, default=list)
+    teams: Mapped[List[str]] = mapped_column(JSON, nullable=False, default=list)
+    is_admin: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    # Status
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    # Timestamps
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now, onupdate=utc_now)
+
+    __table_args__ = (
+        Index("ix_oauth_as_clients_is_active", "is_active"),
+    )
+
+
+class OAuthASRevokedToken(Base):
+    """Revoked JWT deny-list for OAuth Authorization Server.
+
+    Stores JTIs of revoked access tokens to prevent reuse. Entries can be
+    pruned after ``expires_at`` (token expiry + 5 min buffer).
+    """
+
+    __tablename__ = "oauth_as_revoked_tokens"
+
+    # Primary key
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+
+    # Revocation details
+    jti: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+    client_id: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    __table_args__ = (
+        Index("ix_oauth_as_revoked_tokens_expires_at", "expires_at"),
+        Index("ix_oauth_as_revoked_tokens_client_id", "client_id"),
+    )
+
+
 class EmailApiToken(Base):
     """Email user API token model for token catalog management.
 

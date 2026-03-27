@@ -10847,6 +10847,19 @@ try:
 except ImportError:
     logger.debug("OAuth router not available")
 
+# Include OAuth Authorization Server router if enabled
+if settings.oauth_as_enabled:
+    try:
+        # First-Party
+        from mcpgateway.routers.oauth_as import oauth_as_router
+
+        app.include_router(oauth_as_router)
+        logger.info("OAuth AS router included - Authorization Server mode enabled")
+    except ImportError as e:
+        logger.warning(f"OAuth AS router not available: {e}")
+else:
+    logger.info("OAuth AS router not included - Authorization Server mode disabled")
+
 # Include reverse proxy router if enabled
 if settings.mcpgateway_reverse_proxy_enabled:
     try:

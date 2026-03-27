@@ -546,6 +546,21 @@ class Settings(BaseSettings):
 
     oauth_preferred_code_challenge_method: str = Field(default="S256", description="Preferred PKCE code challenge method (S256 or plain)")
 
+    # ===================================
+    # OAuth Authorization Server (AS) Mode
+    # ===================================
+
+    oauth_as_enabled: bool = Field(default=False, description="Enable OAuth Authorization Server mode (startup-only flag)")
+    oauth_token_ttl: int = Field(default=900, description="Default access token TTL in seconds (15 min default, max 3600)")
+    oauth_token_max_ttl: int = Field(default=3600, description="Hard maximum access token TTL in seconds (1 hour)")
+    oauth_issuer: str = Field(default="", description="Token iss claim, derived from external URL if empty")
+    oauth_rs256_private_key_path: str = Field(default="", description="PEM file path for RS256 signing key")
+    oauth_rs256_public_key_path: str = Field(default="", description="PEM file path for RS256 verification key")
+    oauth_rs256_kid: str = Field(default="", description="Key ID for JWKS, auto-generated if empty")
+    oauth_rate_limit_per_client: int = Field(default=10, description="OAuth AS requests per minute per client")
+    oauth_rate_limit_per_ip: int = Field(default=20, description="OAuth AS requests per minute per IP")
+    oauth_rate_limit_global: int = Field(default=100, description="OAuth AS total requests per minute")
+
     # Email-Based Authentication
     email_auth_enabled: bool = Field(default=True, description="Enable email-based authentication")
     public_registration_enabled: bool = Field(

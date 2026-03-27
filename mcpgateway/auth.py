@@ -1115,6 +1115,74 @@ async def get_current_user(
         # Extract JTI for revocation check
         jti = payload.get("jti")
 
+        # === M2M TOKEN PATH: OAuth AS client_credentials tokens ===
+        if payload.get("token_use") == "m2m" and payload.get("auth_provider") == "oauth_as":
+            if settings.oauth_as_enabled and payload.get("iss") == (settings.oauth_issuer or settings.jwt_issuer):
+                # First-Party — lazy import to avoid circular dependencies
+                from mcpgateway.services.oauth_as_service import get_oauth_as_service  # pylint: disable=import-outside-toplevel
+
+                oauth_as_svc = get_oauth_as_service()
+
+                # Check token revocation
+                if jti and await oauth_as_svc.is_token_revoked(jti, None):
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Token has been revoked",
+                        headers={"WWW-Authenticate": "Bearer"},
+                    )
+
+                # Verify client exists and is active
+                client_info = await oauth_as_svc.get_client_for_auth(email, None)
+                if client_info is None:
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Client not found or inactive",
+                        headers={"WWW-Authenticate": "Bearer"},
+                    )
+
+                # Build an EmailUser-compatible object for downstream code
+                m2m_teams = payload.get("teams", client_info.get("teams", []))
+                m2m_is_admin = payload.get("is_admin", client_info.get("is_admin", False))
+
+                if request:
+                    request.state.token_use = "m2m"
+                    request.state.auth_method = "oauth_as"
+                    request.state.token_teams = m2m_teams
+                    request.state.team_id = m2m_teams[0] if len(m2m_teams) == 1 else None
+                    if jti:
+                        request.state.jti = jti
+
+                m2m_user = EmailUser(
+                    email=email,
+                    password_hash="",  # nosec B106 - M2M client, no password
+                    full_name=client_info.get("client_name", email),
+                    is_admin=m2m_is_admin,
+                    is_active=True,
+                    auth_provider="oauth_as",
+                    password_change_required=False,
+                    email_verified_at=datetime.now(timezone.utc),
+                    created_at=datetime.now(timezone.utc),
+                    updated_at=datetime.now(timezone.utc),
+                )
+
+                _log_auth_event(
+                    logger,
+                    f"M2M authentication successful for client: {email}",
+                    user_id=email,
+                    auth_method="oauth_as",
+                    auth_success=True,
+                    security_event="m2m_authentication",
+                )
+
+                return m2m_user
+            else:
+                # Reject: M2M claims from a non-AS issuer or AS disabled
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid token issuer for M2M claims",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+
         # === AUTH CACHING: Check cache before DB queries ===
         if settings.auth_cache_enabled:
             try:

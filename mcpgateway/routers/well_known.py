@@ -195,6 +195,15 @@ async def get_oauth_protected_resource_rfc9728(
     except ServerError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
+    # When OAuth AS mode is enabled, include CF's own issuer in the
+    # authorization_servers array so clients discover it via RFC 9728.
+    if settings.oauth_as_enabled:
+        cf_issuer = settings.oauth_issuer or settings.jwt_issuer
+        if cf_issuer:
+            auth_servers = response_data.get("authorization_servers", [])
+            if cf_issuer not in auth_servers:
+                response_data["authorization_servers"] = [cf_issuer] + auth_servers
+
     # Add cache headers per RFC 9728 recommendations
     headers = {"Cache-Control": f"public, max-age={settings.well_known_cache_max_age}"}
 
