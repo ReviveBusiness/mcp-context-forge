@@ -4189,8 +4189,14 @@ class ToolService(BaseService):
                                     root_cause = root_cause.exceptions[0]
                             # Log failed MCP call (using local variables)
                             mcp_duration_ms = (time.time() - mcp_start_time) * 1000
+                            # Extract error message with fallback for httpx exceptions
+                            error_message = str(root_cause)
+                            if not error_message and hasattr(root_cause, "response"):
+                                # httpx.HTTPStatusError may have empty str() but has response attribute
+                                response = root_cause.response
+                                error_message = f"HTTP {response.status_code} {response.reason_phrase} for url '{response.url}'"
                             # Sanitize error message to prevent URL secrets from leaking in logs
-                            sanitized_error = sanitize_exception_message(str(root_cause), gateway_auth_query_params_decrypted)
+                            sanitized_error = sanitize_exception_message(error_message, gateway_auth_query_params_decrypted)
                             structured_logger.log(
                                 level="ERROR",
                                 message=f"MCP tool call failed: {tool_name_original}",
@@ -4340,8 +4346,14 @@ class ToolService(BaseService):
                                     root_cause = root_cause.exceptions[0]
                             # Log failed MCP call
                             mcp_duration_ms = (time.time() - mcp_start_time) * 1000
+                            # Extract error message with fallback for httpx exceptions
+                            error_message = str(root_cause)
+                            if not error_message and hasattr(root_cause, "response"):
+                                # httpx.HTTPStatusError may have empty str() but has response attribute
+                                response = root_cause.response
+                                error_message = f"HTTP {response.status_code} {response.reason_phrase} for url '{response.url}'"
                             # Sanitize error message to prevent URL secrets from leaking in logs
-                            sanitized_error = sanitize_exception_message(str(root_cause), gateway_auth_query_params_decrypted)
+                            sanitized_error = sanitize_exception_message(error_message, gateway_auth_query_params_decrypted)
                             structured_logger.log(
                                 level="ERROR",
                                 message=f"MCP tool call failed: {tool_name_original}",
