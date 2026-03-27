@@ -14261,7 +14261,10 @@ async function runToolAgentValidation(testIndex) {
 }
 
 async function runToolTest() {
-    console.log("runToolTest called, AppState.currentTestTool:", AppState.currentTestTool);
+    console.log(
+        "runToolTest called, AppState.currentTestTool:",
+        AppState.currentTestTool,
+    );
     const form = safeGetElement("tool-test-form");
     const loadingElement = safeGetElement("tool-test-loading");
     const resultContainer = safeGetElement("tool-test-result");
@@ -14270,7 +14273,7 @@ async function runToolTest() {
     if (!form || !AppState.currentTestTool) {
         console.error("Tool test form or current tool not found", {
             form: !!form,
-            currentTestTool: AppState.currentTestTool
+            currentTestTool: AppState.currentTestTool,
         });
         showErrorMessage("Tool test form not available");
         return;
@@ -34110,7 +34113,9 @@ async function invokeTool(toolName) {
 
         if (!response.ok) {
             const errorText = await response.text();
-            throw new Error(`Failed to fetch tool details (${response.status}): ${errorText}`);
+            throw new Error(
+                `Failed to fetch tool details (${response.status}): ${errorText}`,
+            );
         }
 
         const tool = await response.json();
@@ -34120,7 +34125,10 @@ async function invokeTool(toolName) {
         console.log("AppState.currentTestTool set to:", tool.name, tool);
 
         // Store input schema in registry if it exists
-        if (typeof toolInputSchemaRegistry === "object" && toolInputSchemaRegistry !== null) {
+        if (
+            typeof toolInputSchemaRegistry === "object" &&
+            toolInputSchemaRegistry !== null
+        ) {
             toolInputSchemaRegistry.inputSchema = tool.input_schema;
         }
 
@@ -34138,8 +34146,8 @@ async function invokeTool(toolName) {
 
         // Generate form fields based on input schema
         // This is handled by existing renderToolTestForm function if available
-        if (typeof renderToolTestForm === "function") {
-            renderToolTestForm(tool);
+        if (typeof window.renderToolTestForm === "function") {
+            window.renderToolTestForm(tool);
         } else {
             // Fallback: simple form generation
             const formFields = document.getElementById("tool-test-form-fields");
