@@ -4509,8 +4509,8 @@ class ToolService(BaseService):
                             # Catch any JSON parsing failures and encoding issues
                             # Streamable HTTP endpoints may return HTML, plain text, or have encoding problems
                             # httpx uses json.JSONDecodeError, but we also catch UnicodeDecodeError, etc.
-                            # Graceful fallback: return raw text for non-JSON responses
-                            response_data = http_response.text
+                            # Graceful fallback: wrap non-JSON responses in consistent structure
+                            response_data = {"response_text": http_response.text} if http_response.text else {}
                         if isinstance(response_data, dict) and "response" in response_data:
                             val = response_data["response"]
                             content = [TextContent(type="text", text=val if isinstance(val, str) else orjson.dumps(val).decode())]
@@ -5642,8 +5642,8 @@ class ToolService(BaseService):
                 # Catch any JSON parsing failures and encoding issues
                 # A2A agents may return HTML, plain text, or have encoding problems
                 # httpx uses json.JSONDecodeError, but we also catch UnicodeDecodeError, etc.
-                # Graceful fallback: return raw text for non-JSON responses
-                return http_response.text
+                # Graceful fallback: wrap non-JSON responses in consistent structure
+                return {"response_text": http_response.text} if http_response.text else {}
 
         raise Exception(f"HTTP {http_response.status_code}: {http_response.text}")
 
