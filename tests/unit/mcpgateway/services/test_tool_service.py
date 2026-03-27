@@ -18,6 +18,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, call, MagicMock, Mock, patch
 
 # Third-Party
+import httpx
 import jsonschema
 import orjson
 import pytest
@@ -3843,6 +3844,290 @@ class TestJqFilterCaching:
         data = {"x": "y"}
         result = extract_using_jq(data, "")
         assert result is data
+
+
+# --------------------------------------------------------------------------- #
+#                  Tests for PR #3873 - REST Tool Improvements                #
+# --------------------------------------------------------------------------- #
+
+
+class TestJqFilterEmailValidation:
+    """Tests for JQ filter email address validation (#3855)."""
+
+    def test_extract_using_jq_rejects_email_addresses(self):
+        """Test that simple email addresses are detected and ignored as jq filters.
+
+        Note: The regex pattern is intentionally simple and only catches basic email
+        patterns without dots in the local part (e.g., user@example.com, not foo.bar@example.com).
+        """
+        data = {"key": "value", "user": "test"}
+
+        # Simple email-like strings should be rejected
+        result = extract_using_jq(data, "user@example.com")
+        assert result == data, "Simple email addresses should be ignored as jq filters"
+
+        result = extract_using_jq(data, "admin@test.org")
+        assert result == data
+
+        result = extract_using_jq(data, "testuser@domain.net")
+        assert result == data
+
+    def test_extract_using_jq_accepts_valid_filters(self):
+        """Test that valid jq filters still work after email validation."""
+        data = {"key": "value", "nested": {"field": 123}}
+
+        # Valid jq filters should work normally
+        result = extract_using_jq(data, ".key")
+        assert result == ["value"]
+
+        result = extract_using_jq(data, ".nested.field")
+        assert result == [123]
+
+    def test_extract_using_jq_empty_whitespace_filters(self):
+        """Test that empty/whitespace filters are handled."""
+        data = {"key": "value"}
+
+        # Empty filter
+        result = extract_using_jq(data, "")
+        assert result == data
+
+        # Whitespace-only filter
+        result = extract_using_jq(data, "   ")
+        assert result == data
+
+        result = extract_using_jq(data, "\t\n")
+        assert result == data
+
+
+class TestRestToolQueryParamHandling:
+    """Tests for query parameter handling in REST tools (#3857)."""
+
+    @pytest.mark.asyncio
+    async def test_rest_tool_get_merges_query_params(self, tool_service, mock_tool, mock_global_config_obj, test_db):
+        """Test GET requests merge URL query params with input arguments."""
+        # Configure tool as REST GET with query params in URL
+        mock_tool.integration_type = "REST"
+        mock_tool.request_type = "GET"
+        mock_tool.url = "https://api.example.com/search?api_key=secret123"
+        mock_tool.jsonpath_filter = ""
+        mock_tool.auth_value = None
+
+        setup_db_execute_mock(test_db, mock_tool, mock_global_config_obj)
+
+        # Mock HTTP response
+        mock_response = AsyncMock()
+        mock_response.raise_for_status = Mock()
+        mock_response.status_code = 200
+        mock_response.json = Mock(return_value={"results": []})
+
+        tool_service._http_client.get = AsyncMock(return_value=mock_response)
+
+        mock_metrics_buffer = Mock()
+        mock_metrics_buffer.record_tool_metric = Mock()
+        with patch("mcpgateway.services.tool_service.metrics_buffer", mock_metrics_buffer):
+            # Invoke with additional params
+            await tool_service.invoke_tool(test_db, "test_tool", {"q": "test query", "limit": 10}, request_headers=None)
+
+            # Verify both URL query params AND input args were merged into params
+            call_args = tool_service._http_client.get.call_args
+            assert call_args[0][0] == "https://api.example.com/search"  # Base URL without query params
+            params = call_args[1]["params"]
+            assert "api_key" in params
+            assert params["api_key"] == "secret123"
+            assert "q" in params
+            assert params["q"] == "test query"
+            assert "limit" in params
+            assert params["limit"] == 10
+
+    @pytest.mark.asyncio
+    async def test_rest_tool_post_preserves_query_params_in_url(self, tool_service, mock_tool, mock_global_config_obj, test_db):
+        """Test POST requests preserve query params in URL (signed URL support)."""
+        # Configure tool as REST POST with signed URL query params
+        mock_tool.integration_type = "REST"
+        mock_tool.request_type = "POST"
+        mock_tool.url = "https://storage.example.com/upload?signature=xyz&expires=123"
+        mock_tool.jsonpath_filter = ""
+        mock_tool.auth_value = None
+
+        setup_db_execute_mock(test_db, mock_tool, mock_global_config_obj)
+
+        # Mock HTTP response
+        mock_response = AsyncMock()
+        mock_response.raise_for_status = Mock()
+        mock_response.status_code = 200
+        mock_response.json = Mock(return_value={"success": True})
+
+        tool_service._http_client.request = AsyncMock(return_value=mock_response)
+
+        mock_metrics_buffer = Mock()
+        mock_metrics_buffer.record_tool_metric = Mock()
+        with patch("mcpgateway.services.tool_service.metrics_buffer", mock_metrics_buffer):
+            # Invoke with file data
+            await tool_service.invoke_tool(test_db, "test_tool", {"filename": "test.txt", "content": "data"}, request_headers=None)
+
+            # Verify query params stayed in URL (not merged into body)
+            call_args = tool_service._http_client.request.call_args
+            url = call_args[0][1]
+            assert "signature=xyz" in url
+            assert "expires=123" in url
+
+            # Verify input args went into body (not URL)
+            body = call_args[1]["json"]
+            assert body == {"filename": "test.txt", "content": "data"}
+
+    @pytest.mark.asyncio
+    async def test_rest_tool_put_preserves_query_params(self, tool_service, mock_tool, mock_global_config_obj, test_db):
+        """Test PUT requests preserve query params in URL."""
+        mock_tool.integration_type = "REST"
+        mock_tool.request_type = "PUT"
+        mock_tool.url = "https://api.example.com/resource?token=abc123"
+        mock_tool.jsonpath_filter = ""
+        mock_tool.auth_value = None
+
+        setup_db_execute_mock(test_db, mock_tool, mock_global_config_obj)
+
+        mock_response = AsyncMock()
+        mock_response.raise_for_status = Mock()
+        mock_response.status_code = 200
+        mock_response.json = Mock(return_value={"updated": True})
+
+        tool_service._http_client.request = AsyncMock(return_value=mock_response)
+
+        mock_metrics_buffer = Mock()
+        mock_metrics_buffer.record_tool_metric = Mock()
+        with patch("mcpgateway.services.tool_service.metrics_buffer", mock_metrics_buffer):
+            await tool_service.invoke_tool(test_db, "test_tool", {"data": "updated"}, request_headers=None)
+
+            call_args = tool_service._http_client.request.call_args
+            url = call_args[0][1]
+            assert "token=abc123" in url
+
+
+class TestRestToolNonJsonResponses:
+    """Tests for handling non-JSON responses from REST tools (#3855)."""
+
+    @pytest.mark.asyncio
+    async def test_rest_tool_handles_html_error_response(self, tool_service, mock_tool, mock_global_config_obj, test_db, caplog):
+        """Test REST tool handles HTML error pages gracefully without crashing."""
+        mock_tool.integration_type = "REST"
+        mock_tool.request_type = "GET"
+        mock_tool.jsonpath_filter = ""
+        mock_tool.auth_value = None
+
+        setup_db_execute_mock(test_db, mock_tool, mock_global_config_obj)
+
+        # Mock HTTP response with HTML error page
+        mock_response = AsyncMock()
+        mock_response.raise_for_status = Mock()
+        mock_response.status_code = 500
+        mock_response.text = "<html><body>Internal Server Error</body></html>"
+        # Simulate JSON parsing failure
+        import json
+
+        mock_response.json = Mock(side_effect=json.JSONDecodeError("Expecting value", "", 0))
+
+        tool_service._http_client.get = AsyncMock(return_value=mock_response)
+
+        mock_metrics_buffer = Mock()
+        mock_metrics_buffer.record_tool_metric = Mock()
+        with patch("mcpgateway.services.tool_service.metrics_buffer", mock_metrics_buffer):
+            result = await tool_service.invoke_tool(test_db, "test_tool", {}, request_headers=None)
+
+            # Should handle HTML response gracefully without crashing
+            assert result.is_error is True
+            # Check that JSON parse warning was logged (key indicator that fallback path was taken)
+            assert "Failed to parse JSON error response" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_rest_tool_handles_plain_text_response(self, tool_service, mock_tool, mock_global_config_obj, test_db, caplog):
+        """Test REST tool handles plain text responses without crashing."""
+        mock_tool.integration_type = "REST"
+        mock_tool.request_type = "GET"
+        mock_tool.jsonpath_filter = ""
+        mock_tool.auth_value = None
+
+        setup_db_execute_mock(test_db, mock_tool, mock_global_config_obj)
+
+        # Mock HTTP response with plain text
+        mock_response = AsyncMock()
+        mock_response.raise_for_status = Mock()
+        mock_response.status_code = 200
+        mock_response.text = "Plain text response"
+        import json
+
+        mock_response.json = Mock(side_effect=json.JSONDecodeError("Expecting value", "", 0))
+
+        tool_service._http_client.get = AsyncMock(return_value=mock_response)
+
+        mock_metrics_buffer = Mock()
+        mock_metrics_buffer.record_tool_metric = Mock()
+        with patch("mcpgateway.services.tool_service.metrics_buffer", mock_metrics_buffer):
+            result = await tool_service.invoke_tool(test_db, "test_tool", {}, request_headers=None)
+
+            # Should handle plain text gracefully without crashing
+            assert result.content[0].text is not None
+            # Check that JSON parse warning was logged
+            assert "Failed to parse JSON response" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_rest_tool_handles_xml_response(self, tool_service, mock_tool, mock_global_config_obj, test_db, caplog):
+        """Test REST tool handles XML responses without crashing."""
+        mock_tool.integration_type = "REST"
+        mock_tool.request_type = "GET"
+        mock_tool.jsonpath_filter = ""
+        mock_tool.auth_value = None
+
+        setup_db_execute_mock(test_db, mock_tool, mock_global_config_obj)
+
+        # Mock HTTP response with XML
+        mock_response = AsyncMock()
+        mock_response.raise_for_status = Mock()
+        mock_response.status_code = 200
+        mock_response.text = '<?xml version="1.0"?><data>value</data>'
+        import json
+
+        mock_response.json = Mock(side_effect=json.JSONDecodeError("Expecting value", "", 0))
+
+        tool_service._http_client.get = AsyncMock(return_value=mock_response)
+
+        mock_metrics_buffer = Mock()
+        mock_metrics_buffer.record_tool_metric = Mock()
+        with patch("mcpgateway.services.tool_service.metrics_buffer", mock_metrics_buffer):
+            result = await tool_service.invoke_tool(test_db, "test_tool", {}, request_headers=None)
+
+            # Should handle XML gracefully without crashing
+            assert result.content[0].text is not None
+            # Check that JSON parse warning was logged
+            assert "Failed to parse JSON response" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_rest_tool_handles_unicode_decode_error(self, tool_service, mock_tool, mock_global_config_obj, test_db, caplog):
+        """Test REST tool handles invalid UTF-8 encoding without crashing."""
+        mock_tool.integration_type = "REST"
+        mock_tool.request_type = "GET"
+        mock_tool.jsonpath_filter = ""
+        mock_tool.auth_value = None
+
+        setup_db_execute_mock(test_db, mock_tool, mock_global_config_obj)
+
+        # Mock HTTP response with encoding error
+        mock_response = AsyncMock()
+        mock_response.raise_for_status = Mock()
+        mock_response.status_code = 200
+        mock_response.text = "Invalid encoding content"
+        mock_response.json = Mock(side_effect=UnicodeDecodeError("utf-8", b"", 0, 1, "invalid"))
+
+        tool_service._http_client.get = AsyncMock(return_value=mock_response)
+
+        mock_metrics_buffer = Mock()
+        mock_metrics_buffer.record_tool_metric = Mock()
+        with patch("mcpgateway.services.tool_service.metrics_buffer", mock_metrics_buffer):
+            result = await tool_service.invoke_tool(test_db, "test_tool", {}, request_headers=None)
+
+            # Should handle the encoding error gracefully without crashing
+            assert result.content[0].text is not None
+            # Check that JSON parse warning was logged
+            assert "Failed to parse JSON response" in caplog.text
 
 
 class TestSchemaValidatorCaching:
