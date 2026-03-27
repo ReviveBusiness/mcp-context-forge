@@ -20,6 +20,7 @@ import base64
 import binascii
 from datetime import datetime, timezone
 from functools import lru_cache
+import json
 import os
 import re
 import ssl
@@ -423,7 +424,12 @@ def extract_using_jq(data, jq_filter=""):
     # Check if it looks like an email or other non-jq data
     if re.match(r"^[^.\[\]|]+@[^.\[\]|]+\.[^.\[\]|]+$", jq_filter_str):
         # Looks like an email address, treat as empty filter
-        logger.warning(f"Invalid jq filter detected (appears to be email): {jq_filter_str}. Treating as empty filter.")
+        logger.warning(f"Invalid jq filter (email address): {jq_filter_str}. Treating as empty filter.")
+        return data
+
+    # Ensure it contains at least one jq operator
+    if not re.search(r'[.\[\]|]', jq_filter_str):
+        logger.warning(f"Invalid jq filter (no operators): {jq_filter_str}. Treating as empty filter.")
         return data
 
     # Track if input was originally a string (for error handling)
@@ -3837,11 +3843,12 @@ class ToolService(BaseService):
                     elif response.status_code not in [200, 201, 202, 206]:
                         try:
                             result = response.json()
-                        except Exception:
-                            # Catch any JSON parsing failures and encoding issues
+                        except (json.JSONDecodeError, orjson.JSONDecodeError, UnicodeDecodeError, AttributeError) as e:
+                            # Catch JSON parsing failures and encoding issues
                             # REST APIs may return HTML error pages, plain text, XML, or have encoding problems
                             # httpx uses json.JSONDecodeError (not orjson), but we also catch UnicodeDecodeError, etc.
                             # Graceful fallback: return raw text for non-JSON error responses
+                            logger.warning(f"Failed to parse JSON error response: {e}")
                             result = {"response_text": response.text} if response.text else {}
                         error_val = result["error"] if "error" in result else "Tool error encountered"
                         tool_result = ToolResult(
@@ -3852,11 +3859,12 @@ class ToolService(BaseService):
                     else:
                         try:
                             result = response.json()
-                        except Exception:
-                            # Catch any JSON parsing failures and encoding issues
+                        except (json.JSONDecodeError, orjson.JSONDecodeError, UnicodeDecodeError, AttributeError) as e:
+                            # Catch JSON parsing failures and encoding issues
                             # REST APIs may return HTML, plain text, XML, or have encoding problems
                             # httpx uses json.JSONDecodeError (not orjson), but we also catch UnicodeDecodeError, etc.
                             # Graceful fallback: return raw text for non-JSON responses
+                            logger.warning(f"Failed to parse JSON response: {e}")
                             result = {"response_text": response.text} if response.text else {}
                         logger.debug(f"REST API tool response: {result}")
                         filtered_response = extract_using_jq(result, tool_jsonpath_filter)
@@ -4505,11 +4513,12 @@ class ToolService(BaseService):
                     if http_response.status_code == 200:
                         try:
                             response_data = http_response.json()
-                        except Exception:
-                            # Catch any JSON parsing failures and encoding issues
+                        except (json.JSONDecodeError, orjson.JSONDecodeError, UnicodeDecodeError, AttributeError) as e:
+                            # Catch JSON parsing failures and encoding issues
                             # Streamable HTTP endpoints may return HTML, plain text, or have encoding problems
                             # httpx uses json.JSONDecodeError, but we also catch UnicodeDecodeError, etc.
                             # Graceful fallback: wrap non-JSON responses in consistent structure
+                            logger.warning(f"Failed to parse JSON response from streamable HTTP: {e}")
                             response_data = {"response_text": http_response.text} if http_response.text else {}
                         if isinstance(response_data, dict) and "response" in response_data:
                             val = response_data["response"]
@@ -5638,11 +5647,12 @@ class ToolService(BaseService):
         if http_response.status_code == 200:
             try:
                 return http_response.json()
-            except Exception:
-                # Catch any JSON parsing failures and encoding issues
+            except (json.JSONDecodeError, orjson.JSONDecodeError, UnicodeDecodeError, AttributeError) as e:
+                # Catch JSON parsing failures and encoding issues
                 # A2A agents may return HTML, plain text, or have encoding problems
                 # httpx uses json.JSONDecodeError, but we also catch UnicodeDecodeError, etc.
                 # Graceful fallback: wrap non-JSON responses in consistent structure
+                logger.warning(f"Failed to parse JSON response from A2A agent: {e}")
                 return {"response_text": http_response.text} if http_response.text else {}
 
         raise Exception(f"HTTP {http_response.status_code}: {http_response.text}")
