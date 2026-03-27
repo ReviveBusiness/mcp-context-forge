@@ -3335,6 +3335,21 @@ class TestExtractUsingJqErrors:
         assert isinstance(result[0], TextContent)
         assert "Error" in result[0].text
 
+    def test_jq_filter_empty_string_after_strip(self):
+        """When jq_filter is whitespace-only, returns data unchanged (line 420)."""
+        data = {"key": "value"}
+        result = extract_using_jq(data, "   ")  # Whitespace-only filter
+        assert result == data
+
+    def test_jq_filter_email_address_detected(self):
+        """When jq_filter looks like an email, logs warning and returns data unchanged (lines 425-426)."""
+        data = {"key": "value"}
+        with patch("mcpgateway.services.tool_service.logger") as mock_logger:
+            result = extract_using_jq(data, "user@example.com")
+        assert result == data
+        mock_logger.warning.assert_called_once()
+        assert "Invalid jq filter (email address)" in mock_logger.warning.call_args[0][0]
+
 
 # ---------------------------------------------------------------------------
 # get_top_tools — cache hit (line 494)
@@ -5180,6 +5195,111 @@ class TestInvokeToolRestSuccess:
             mock_mbuf.return_value = MagicMock()
 
             tool_service._http_client = AsyncMock()
+            tool_service._http_client.get = fake_get
+
+            result = await tool_service.invoke_tool(db, "test_tool", {})
+        assert result is not None
+
+    @pytest.mark.asyncio
+    async def test_rest_stdlib_json_decode_error(self, tool_service):
+        """REST tool handles stdlib json.JSONDecodeError (not orjson)."""
+        tp = _make_tool_payload(integration_type="REST", request_type="GET")
+        db = MagicMock()
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json = MagicMock(side_effect=json.JSONDecodeError("Expecting value", "doc", 0))
+        mock_response.text = "plain text"
+        mock_response.raise_for_status = MagicMock()
+
+        async def fake_get(*a, **kw):
+            return mock_response
+
+        with (
+            _setup_cache_for_invoke(tp),
+            patch.object(tool_service, "_check_tool_access", AsyncMock(return_value=True)),
+            patch("mcpgateway.services.tool_service.global_config_cache") as mock_gcc,
+            patch("mcpgateway.services.tool_service.current_trace_id") as mock_trace,
+            patch("mcpgateway.services.tool_service.create_span") as mock_span_ctx,
+            patch("mcpgateway.services.metrics_buffer_service.get_metrics_buffer_service") as mock_mbuf,
+            patch("mcpgateway.services.tool_service.compute_passthrough_headers_cached", return_value={}),
+        ):
+            mock_gcc.get_passthrough_headers = MagicMock(return_value=[])
+            mock_trace.get = MagicMock(return_value=None)
+            mock_span_ctx.return_value.__enter__ = MagicMock(return_value=MagicMock())
+            mock_span_ctx.return_value.__exit__ = MagicMock(return_value=False)
+            mock_mbuf.return_value = MagicMock()
+
+            tool_service._http_client.get = fake_get
+
+            result = await tool_service.invoke_tool(db, "test_tool", {})
+        assert result is not None
+
+    @pytest.mark.asyncio
+    async def test_rest_unicode_decode_error(self, tool_service):
+        """REST tool handles UnicodeDecodeError during JSON parsing."""
+        tp = _make_tool_payload(integration_type="REST", request_type="GET")
+        db = MagicMock()
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json = MagicMock(side_effect=UnicodeDecodeError("utf-8", b"\x80", 0, 1, "invalid start byte"))
+        mock_response.text = "text with encoding issue"
+        mock_response.raise_for_status = MagicMock()
+
+        async def fake_get(*a, **kw):
+            return mock_response
+
+        with (
+            _setup_cache_for_invoke(tp),
+            patch.object(tool_service, "_check_tool_access", AsyncMock(return_value=True)),
+            patch("mcpgateway.services.tool_service.global_config_cache") as mock_gcc,
+            patch("mcpgateway.services.tool_service.current_trace_id") as mock_trace,
+            patch("mcpgateway.services.tool_service.create_span") as mock_span_ctx,
+            patch("mcpgateway.services.metrics_buffer_service.get_metrics_buffer_service") as mock_mbuf,
+            patch("mcpgateway.services.tool_service.compute_passthrough_headers_cached", return_value={}),
+        ):
+            mock_gcc.get_passthrough_headers = MagicMock(return_value=[])
+            mock_trace.get = MagicMock(return_value=None)
+            mock_span_ctx.return_value.__enter__ = MagicMock(return_value=MagicMock())
+            mock_span_ctx.return_value.__exit__ = MagicMock(return_value=False)
+            mock_mbuf.return_value = MagicMock()
+
+            tool_service._http_client.get = fake_get
+
+            result = await tool_service.invoke_tool(db, "test_tool", {})
+        assert result is not None
+
+    @pytest.mark.asyncio
+    async def test_rest_attribute_error(self, tool_service):
+        """REST tool handles AttributeError during JSON parsing."""
+        tp = _make_tool_payload(integration_type="REST", request_type="GET")
+        db = MagicMock()
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json = MagicMock(side_effect=AttributeError("'NoneType' object has no attribute 'read'"))
+        mock_response.text = "fallback text"
+        mock_response.raise_for_status = MagicMock()
+
+        async def fake_get(*a, **kw):
+            return mock_response
+
+        with (
+            _setup_cache_for_invoke(tp),
+            patch.object(tool_service, "_check_tool_access", AsyncMock(return_value=True)),
+            patch("mcpgateway.services.tool_service.global_config_cache") as mock_gcc,
+            patch("mcpgateway.services.tool_service.current_trace_id") as mock_trace,
+            patch("mcpgateway.services.tool_service.create_span") as mock_span_ctx,
+            patch("mcpgateway.services.metrics_buffer_service.get_metrics_buffer_service") as mock_mbuf,
+            patch("mcpgateway.services.tool_service.compute_passthrough_headers_cached", return_value={}),
+        ):
+            mock_gcc.get_passthrough_headers = MagicMock(return_value=[])
+            mock_trace.get = MagicMock(return_value=None)
+            mock_span_ctx.return_value.__enter__ = MagicMock(return_value=MagicMock())
+            mock_span_ctx.return_value.__exit__ = MagicMock(return_value=False)
+            mock_mbuf.return_value = MagicMock()
+
             tool_service._http_client.get = fake_get
 
             result = await tool_service.invoke_tool(db, "test_tool", {})

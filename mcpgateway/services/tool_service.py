@@ -4182,14 +4182,8 @@ class ToolService(BaseService):
                                     root_cause = root_cause.exceptions[0]
                             # Log failed MCP call (using local variables)
                             mcp_duration_ms = (time.time() - mcp_start_time) * 1000
-                            # Extract error message with fallback for httpx exceptions
-                            error_message = str(root_cause)
-                            if not error_message and hasattr(root_cause, "response"):
-                                # httpx.HTTPStatusError may have empty str() but has response attribute
-                                response = root_cause.response
-                                error_message = f"HTTP {response.status_code} {response.reason_phrase} for url '{response.url}'"
                             # Sanitize error message to prevent URL secrets from leaking in logs
-                            sanitized_error = sanitize_exception_message(error_message, gateway_auth_query_params_decrypted)
+                            sanitized_error = sanitize_exception_message(str(root_cause), gateway_auth_query_params_decrypted)
                             structured_logger.log(
                                 level="ERROR",
                                 message=f"MCP tool call failed: {tool_name_original}",
@@ -4339,14 +4333,8 @@ class ToolService(BaseService):
                                     root_cause = root_cause.exceptions[0]
                             # Log failed MCP call
                             mcp_duration_ms = (time.time() - mcp_start_time) * 1000
-                            # Extract error message with fallback for httpx exceptions
-                            error_message = str(root_cause)
-                            if not error_message and hasattr(root_cause, "response"):
-                                # httpx.HTTPStatusError may have empty str() but has response attribute
-                                response = root_cause.response
-                                error_message = f"HTTP {response.status_code} {response.reason_phrase} for url '{response.url}'"
                             # Sanitize error message to prevent URL secrets from leaking in logs
-                            sanitized_error = sanitize_exception_message(error_message, gateway_auth_query_params_decrypted)
+                            sanitized_error = sanitize_exception_message(str(root_cause), gateway_auth_query_params_decrypted)
                             structured_logger.log(
                                 level="ERROR",
                                 message=f"MCP tool call failed: {tool_name_original}",
@@ -4516,15 +4504,7 @@ class ToolService(BaseService):
                         raise ToolTimeoutError(f"Tool invocation timed out after {effective_timeout}s")
 
                     if http_response.status_code == 200:
-                        try:
-                            response_data = http_response.json()
-                        except (json.JSONDecodeError, orjson.JSONDecodeError, UnicodeDecodeError, AttributeError) as e:
-                            # Catch JSON parsing failures and encoding issues
-                            # Streamable HTTP endpoints may return HTML, plain text, or have encoding problems
-                            # httpx uses json.JSONDecodeError, but we also catch UnicodeDecodeError, etc.
-                            # Graceful fallback: wrap non-JSON responses in consistent structure
-                            logger.warning(f"Failed to parse JSON response from streamable HTTP: {e}")
-                            response_data = {"response_text": http_response.text} if http_response.text else {}
+                        response_data = http_response.json()
                         if isinstance(response_data, dict) and "response" in response_data:
                             val = response_data["response"]
                             content = [TextContent(type="text", text=val if isinstance(val, str) else orjson.dumps(val).decode())]
@@ -4584,13 +4564,7 @@ class ToolService(BaseService):
                 if isinstance(e, BaseExceptionGroup):
                     while isinstance(root_cause, BaseExceptionGroup) and root_cause.exceptions:
                         root_cause = root_cause.exceptions[0]
-
-                # Extract error message with fallback for httpx exceptions
                 error_message = str(root_cause)
-                if not error_message and hasattr(root_cause, "response"):
-                    # httpx.HTTPStatusError may have empty str() but has response attribute
-                    response = root_cause.response
-                    error_message = f"HTTP {response.status_code} {response.reason_phrase} for url '{response.url}'"
                 # Set span error status
                 if span:
                     span.set_attribute("error", True)
@@ -5650,15 +5624,7 @@ class ToolService(BaseService):
         http_response = await client.post(endpoint_url, json=request_data, headers=headers)
 
         if http_response.status_code == 200:
-            try:
-                return http_response.json()
-            except (json.JSONDecodeError, orjson.JSONDecodeError, UnicodeDecodeError, AttributeError) as e:
-                # Catch JSON parsing failures and encoding issues
-                # A2A agents may return HTML, plain text, or have encoding problems
-                # httpx uses json.JSONDecodeError, but we also catch UnicodeDecodeError, etc.
-                # Graceful fallback: wrap non-JSON responses in consistent structure
-                logger.warning(f"Failed to parse JSON response from A2A agent: {e}")
-                return {"response_text": http_response.text} if http_response.text else {}
+            return http_response.json()
 
         raise Exception(f"HTTP {http_response.status_code}: {http_response.text}")
 
