@@ -414,22 +414,15 @@ def extract_using_jq(data, jq_filter=""):
         return data
 
     # Validate that jq_filter looks like a valid jq expression
-    # Common indicators of invalid filter (likely corrupted/wrong data):
-    # - Contains @ followed by domain pattern (email address)
-    # - Doesn't contain any jq operators (., |, [], etc.)
+    # Check for obvious non-jq patterns (e.g., email addresses mistakenly used as filters)
     jq_filter_str = str(jq_filter).strip()
     if not jq_filter_str:
         return data
 
-    # Check if it looks like an email or other non-jq data
+    # Check if it looks like an email address (common mistake)
     if re.match(r"^[^.\[\]|]+@[^.\[\]|]+\.[^.\[\]|]+$", jq_filter_str):
         # Looks like an email address, treat as empty filter
         logger.warning(f"Invalid jq filter (email address): {jq_filter_str}. Treating as empty filter.")
-        return data
-
-    # Ensure it contains at least one jq operator
-    if not re.search(r"[.\[\]|]", jq_filter_str):
-        logger.warning(f"Invalid jq filter (no operators): {jq_filter_str}. Treating as empty filter.")
         return data
 
     # Track if input was originally a string (for error handling)
