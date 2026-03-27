@@ -428,7 +428,7 @@ def extract_using_jq(data, jq_filter=""):
         return data
 
     # Ensure it contains at least one jq operator
-    if not re.search(r'[.\[\]|]', jq_filter_str):
+    if not re.search(r"[.\[\]|]", jq_filter_str):
         logger.warning(f"Invalid jq filter (no operators): {jq_filter_str}. Treating as empty filter.")
         return data
 
