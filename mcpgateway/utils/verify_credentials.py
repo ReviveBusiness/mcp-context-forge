@@ -129,12 +129,60 @@ def extract_websocket_bearer_token(query_params: Any, headers: Any, *, query_par
     return None
 
 
+async def _verify_oauth_as_token(token: str) -> dict:
+    """Verify an OAuth AS RS256 access token using the AS public key.
+
+    Called when the token header indicates alg=RS256 and typ=at+jwt,
+    indicating a machine-to-machine token issued by the built-in
+    OAuth Authorization Server.
+
+    Args:
+        token: JWT token string with RS256 signature.
+
+    Returns:
+        dict: Decoded token payload.
+
+    Raises:
+        HTTPException: If token verification fails.
+    """
+    from mcpgateway.services.oauth_as_service import get_oauth_as_service  # pylint: disable=import-outside-toplevel
+
+    oauth_svc = get_oauth_as_service()
+    public_key = oauth_svc._public_key  # noqa: SLF001
+
+    options = {
+        "verify_aud": settings.jwt_audience_verification,
+        "verify_iss": True,
+        "require": ["exp", "sub", "jti"],
+    }
+
+    decode_kwargs = {
+        "key": public_key,
+        "algorithms": ["RS256"],
+        "options": options,
+    }
+
+    if settings.jwt_audience_verification:
+        decode_kwargs["audience"] = settings.jwt_audience
+
+    # Accept the OAuth AS issuer for RS256 tokens
+    decode_kwargs["issuer"] = settings.oauth_issuer or settings.jwt_issuer
+
+    payload = jwt.decode(token, **decode_kwargs)
+    logger.debug("OAuth AS RS256 token verified for sub=%s", payload.get("sub"))
+    return payload
+
+
 async def verify_jwt_token(token: str) -> dict:
     """Verify and decode a JWT token in a single pass.
 
     Decodes and validates a JWT token using the configured secret key
     and algorithm from settings. Uses PyJWT's require option for claim
     enforcement instead of a separate unverified decode.
+
+    When OAUTH_AS_ENABLED is true and the token header indicates RS256
+    with typ=at+jwt, the token is verified using the OAuth AS public
+    key and issuer instead of the default HS256 path.
 
     Note:
         With single-pass decoding, signature validation occurs before
@@ -151,6 +199,16 @@ async def verify_jwt_token(token: str) -> dict:
         HTTPException: If token is invalid, expired, or missing required claims.
     """
     try:
+        # Check if this is an OAuth AS RS256 token before attempting HS256 decode.
+        # OAuth AS tokens have alg=RS256 and typ=at+jwt in the header.
+        if settings.oauth_as_enabled:
+            try:
+                unverified_header = jwt.get_unverified_header(token)
+                if unverified_header.get("alg") == "RS256" and unverified_header.get("typ") == "at+jwt":
+                    return await _verify_oauth_as_token(token)
+            except jwt.PyJWTError:
+                pass  # Not a valid JWT header — fall through to standard path
+
         validate_jwt_algo_and_keys()
 
         # Import the verification key helper
