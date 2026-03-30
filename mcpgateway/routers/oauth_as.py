@@ -319,31 +319,9 @@ async def oauth_jwks():
     )
 
 
-@oauth_as_router.get(
-    "/.well-known/oauth-authorization-server",
-    dependencies=[Depends(_require_oauth_as_enabled)],
-)
-async def oauth_as_metadata(request: Request):
-    """OAuth 2.0 Authorization Server Metadata (RFC 8414).
-
-    Returns metadata about this authorization server including supported
-    grant types, token endpoint, JWKS URI, and scopes.
-
-    Args:
-        request: FastAPI request for deriving base URL
-
-    Returns:
-        JSONResponse with AS metadata document
-    """
-    # First-Party
-    from mcpgateway.routers.well_known import get_base_url_with_protocol
-    from mcpgateway.services.oauth_as_service import get_oauth_as_service
-
-    service = get_oauth_as_service()
-    base_url = get_base_url_with_protocol(request)
-    metadata = service.get_as_metadata(base_url)
-
-    return JSONResponse(content=metadata)
+# NOTE: /.well-known/oauth-authorization-server (RFC 8414) is defined in
+# well_known.py to ensure correct route ordering — the catch-all
+# /.well-known/{filename:path} would shadow it if registered here.
 
 
 # ---------------------------------------------------------------------------

@@ -513,6 +513,7 @@ class OAuthASService:
 
         return {
             "issuer": issuer,
+            "authorization_endpoint": f"{base_url}/oauth/authorize",
             "token_endpoint": f"{base_url}/oauth/token",
             "jwks_uri": f"{base_url}/oauth/jwks",
             "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post"],
@@ -525,6 +526,7 @@ class OAuthASService:
                 "servers.read",
                 "servers.manage",
                 "admin",
+                "mcp:access",
             ],
             "response_types_supported": ["none"],
             "service_documentation": f"{base_url}/docs",

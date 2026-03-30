@@ -156,8 +156,11 @@ def client(mock_service):
     """
     from mcpgateway.middleware.rbac import get_current_user_with_permissions
     from mcpgateway.routers.oauth_as import _get_db
+    from mcpgateway.routers.well_known import router as well_known_router
 
     test_app = FastAPI()
+    # well_known router must be included first for /.well-known/oauth-authorization-server
+    test_app.include_router(well_known_router)
     test_app.include_router(oauth_as_router)
 
     # Override route-level dependencies
@@ -166,6 +169,7 @@ def client(mock_service):
 
     with (
         patch("mcpgateway.config.settings.oauth_as_enabled", True),
+        patch("mcpgateway.config.settings.well_known_enabled", True),
         patch("mcpgateway.services.oauth_as_service.get_oauth_as_service", return_value=mock_service),
     ):
         yield TestClient(test_app)
@@ -176,14 +180,19 @@ def client_disabled():
     """Create a TestClient where oauth_as_enabled=False."""
     from mcpgateway.middleware.rbac import get_current_user_with_permissions
     from mcpgateway.routers.oauth_as import _get_db
+    from mcpgateway.routers.well_known import router as well_known_router
 
     test_app = FastAPI()
+    test_app.include_router(well_known_router)
     test_app.include_router(oauth_as_router)
 
     test_app.dependency_overrides[get_current_user_with_permissions] = lambda: _admin_user_ctx(is_admin=True)
     test_app.dependency_overrides[_get_db] = _mock_db_session
 
-    with patch("mcpgateway.config.settings.oauth_as_enabled", False):
+    with (
+        patch("mcpgateway.config.settings.oauth_as_enabled", False),
+        patch("mcpgateway.config.settings.well_known_enabled", True),
+    ):
         yield TestClient(test_app, raise_server_exceptions=False)
 
 

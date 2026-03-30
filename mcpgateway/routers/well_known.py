@@ -314,6 +314,30 @@ def get_well_known_file_content(filename: str) -> PlainTextResponse:
             raise HTTPException(status_code=404, detail="Not found")
 
 
+@router.get("/.well-known/oauth-authorization-server")
+async def oauth_as_metadata(request: Request):
+    """OAuth 2.0 Authorization Server Metadata (RFC 8414).
+
+    Returns metadata about this authorization server including supported
+    grant types, token endpoint, JWKS URI, and scopes.
+
+    This route is registered here (not in oauth_as.py) because FastAPI
+    matches routes in registration order — the /.well-known/{filename:path}
+    catch-all below would shadow it if registered later via include_router().
+    """
+    if not settings.oauth_as_enabled:
+        raise HTTPException(status_code=404, detail="OAuth Authorization Server is not enabled")
+
+    # First-Party (lazy import to avoid circular dependency)
+    from mcpgateway.services.oauth_as_service import get_oauth_as_service
+
+    service = get_oauth_as_service()
+    base_url = get_base_url_with_protocol(request)
+    metadata = service.get_as_metadata(base_url)
+
+    return JSONResponse(content=metadata)
+
+
 @router.get("/.well-known/{filename:path}", include_in_schema=False)
 async def get_well_known_file(filename: str, response: Response, request: Request):
     """

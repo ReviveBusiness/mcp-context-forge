@@ -649,8 +649,13 @@ class TestGetASMetadata:
     def test_metadata_scopes_supported(self, oauth_service, mock_settings):
         """Test scopes_supported includes expected scopes."""
         meta = oauth_service.get_as_metadata("https://gateway.example.com")
-        expected = ["tools.read", "tools.execute", "resources.read", "prompts.read", "servers.read", "servers.manage", "admin"]
+        expected = ["tools.read", "tools.execute", "resources.read", "prompts.read", "servers.read", "servers.manage", "admin", "mcp:access"]
         assert meta["scopes_supported"] == expected
+
+    def test_metadata_authorization_endpoint(self, oauth_service, mock_settings):
+        """Test authorization_endpoint is present (required by MCP SDK OAuthMetadataSchema)."""
+        meta = oauth_service.get_as_metadata("https://gateway.example.com")
+        assert meta["authorization_endpoint"] == "https://gateway.example.com/oauth/authorize"
 
 
 # ---------------------------------------------------------------------------
