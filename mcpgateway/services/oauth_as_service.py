@@ -511,7 +511,7 @@ class OAuthASService:
         """
         issuer = settings.oauth_issuer or base_url
 
-        return {
+        metadata: dict = {
             "issuer": issuer,
             "authorization_endpoint": f"{base_url}/oauth/authorize",
             "token_endpoint": f"{base_url}/oauth/token",
@@ -530,6 +530,110 @@ class OAuthASService:
             ],
             "response_types_supported": ["none"],
             "service_documentation": f"{base_url}/docs",
+        }
+
+        # Include registration_endpoint only when DCR is enabled (RFC 7591 §3.1)
+        if settings.oauth_dcr_mode != "disabled":
+            metadata["registration_endpoint"] = f"{base_url}/oauth/register"
+
+        return metadata
+
+    # ------------------------------------------------------------------
+    # Dynamic Client Registration (RFC 7591) — server-side
+    # ------------------------------------------------------------------
+
+    async def register_dcr_client(
+        self,
+        client_name: str,
+        grant_types: List[str],
+        token_endpoint_auth_method: str,
+        requested_scope: Optional[str],
+        db: Session,
+    ) -> dict:
+        """Register a new OAuth client via RFC 7591 Dynamic Client Registration.
+
+        Auto-generates a ``client_id`` (the caller cannot supply their own).
+        Scope is restricted to ``oauth_dcr_default_scopes`` — admin scope is
+        never granted via DCR.
+
+        Args:
+            client_name: Human-readable client name (required per RFC 7591).
+            grant_types: List of requested grant types; only
+                ``client_credentials`` is supported — others are silently
+                ignored.
+            token_endpoint_auth_method: Requested auth method; must be
+                ``client_secret_basic`` or ``client_secret_post``.
+            requested_scope: Space-delimited scope string. Each scope is
+                intersected with the DCR default scopes — unknown or elevated
+                scopes are dropped (not rejected, per RFC 7591 §3.2).
+            db: SQLAlchemy database session.
+
+        Returns:
+            RFC 7591 ClientInformation dict including ``client_id``,
+            ``client_secret``, ``client_id_issued_at``, and
+            ``client_secret_expires_at`` (0 = non-expiring).
+
+        Raises:
+            ValueError: If ``client_name`` is empty or
+                ``token_endpoint_auth_method`` is not supported.
+        """
+        if not client_name or not client_name.strip():
+            raise ValueError("client_name is required")
+
+        supported_auth_methods = {"client_secret_basic", "client_secret_post"}
+        if token_endpoint_auth_method not in supported_auth_methods:
+            raise ValueError(
+                f"token_endpoint_auth_method must be one of: {', '.join(sorted(supported_auth_methods))}"
+            )
+
+        # Scope intersection: DCR clients get default scopes only, never admin
+        default_scopes: List[str] = list(settings.oauth_dcr_default_scopes)
+        if requested_scope:
+            requested = requested_scope.split()
+            # Intersection — unknown scopes are silently dropped per RFC 7591 §3.2
+            effective_scopes = [s for s in requested if s in default_scopes]
+            if not effective_scopes:
+                effective_scopes = default_scopes
+        else:
+            effective_scopes = default_scopes
+
+        # Auto-generate a stable, URL-safe client_id
+        import uuid  # pylint: disable=import-outside-toplevel
+        client_id = f"dcr-{uuid.uuid4().hex[:12]}"
+
+        # Delegate to existing register_client (handles hashing, DB write, logging)
+        result = await self.register_client(
+            client_id=client_id,
+            client_name=client_name.strip(),
+            scopes=effective_scopes,
+            teams=[],
+            is_admin=False,
+            db=db,
+        )
+
+        if result is None:
+            # UUID collision — astronomically unlikely but handle gracefully
+            client_id = f"dcr-{uuid.uuid4().hex[:12]}"
+            result = await self.register_client(
+                client_id=client_id,
+                client_name=client_name.strip(),
+                scopes=effective_scopes,
+                teams=[],
+                is_admin=False,
+                db=db,
+            )
+
+        issued_at = int(datetime.now(timezone.utc).timestamp())
+
+        return {
+            "client_id": result["client_id"],
+            "client_secret": result["client_secret"],
+            "client_id_issued_at": issued_at,
+            "client_secret_expires_at": 0,  # 0 = non-expiring per RFC 7591 §3.2.1
+            "client_name": result["client_name"],
+            "grant_types": ["client_credentials"],
+            "token_endpoint_auth_method": token_endpoint_auth_method,
+            "scope": " ".join(effective_scopes),
         }
 
     # ------------------------------------------------------------------

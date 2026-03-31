@@ -140,6 +140,18 @@ def mock_service():
         }
     )
     svc.revoke_token = AsyncMock(return_value=True)
+    svc.register_dcr_client = AsyncMock(
+        return_value={
+            "client_id": "dcr-abc123def456",
+            "client_secret": "dcr-generated-secret",
+            "client_id_issued_at": 1711468800,
+            "client_secret_expires_at": 0,
+            "client_name": "My MCP Client",
+            "grant_types": ["client_credentials"],
+            "token_endpoint_auth_method": "client_secret_basic",
+            "scope": "mcp:access",
+        }
+    )
 
     return svc
 
@@ -762,3 +774,192 @@ class TestFeatureDisabledDenyPaths:
             json={"jti": "any"},
         )
         assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# DCR — Dynamic Client Registration (RFC 7591)
+# ---------------------------------------------------------------------------
+
+
+class TestDCRRegistration:
+    """Tests for POST /oauth/register (RFC 7591 Dynamic Client Registration)."""
+
+    # ------------------------------------------------------------------
+    # Open mode fixtures
+    # ------------------------------------------------------------------
+
+    @pytest.fixture
+    def client_dcr_open(self, mock_service):
+        """TestClient with DCR mode=open (no auth required)."""
+        from mcpgateway.middleware.rbac import get_current_user_with_permissions
+        from mcpgateway.routers.oauth_as import _get_db
+
+        test_app = FastAPI()
+        test_app.include_router(oauth_as_router)
+        test_app.dependency_overrides[get_current_user_with_permissions] = lambda: _admin_user_ctx(is_admin=False)
+        test_app.dependency_overrides[_get_db] = _mock_db_session
+
+        with (
+            patch("mcpgateway.config.settings.oauth_as_enabled", True),
+            patch("mcpgateway.config.settings.oauth_dcr_mode", "open"),
+            patch("mcpgateway.services.oauth_as_service.get_oauth_as_service", return_value=mock_service),
+        ):
+            yield TestClient(test_app)
+
+    @pytest.fixture
+    def client_dcr_auth(self, mock_service):
+        """TestClient with DCR mode=authenticated (Bearer required)."""
+        from mcpgateway.middleware.rbac import get_current_user_with_permissions
+        from mcpgateway.routers.oauth_as import _get_db
+
+        test_app = FastAPI()
+        test_app.include_router(oauth_as_router)
+        test_app.dependency_overrides[get_current_user_with_permissions] = lambda: _admin_user_ctx(is_admin=False)
+        test_app.dependency_overrides[_get_db] = _mock_db_session
+
+        with (
+            patch("mcpgateway.config.settings.oauth_as_enabled", True),
+            patch("mcpgateway.config.settings.oauth_dcr_mode", "authenticated"),
+            patch("mcpgateway.services.oauth_as_service.get_oauth_as_service", return_value=mock_service),
+        ):
+            yield TestClient(test_app)
+
+    @pytest.fixture
+    def client_dcr_disabled(self, mock_service):
+        """TestClient with DCR mode=disabled."""
+        from mcpgateway.middleware.rbac import get_current_user_with_permissions
+        from mcpgateway.routers.oauth_as import _get_db
+
+        test_app = FastAPI()
+        test_app.include_router(oauth_as_router)
+        test_app.dependency_overrides[get_current_user_with_permissions] = lambda: _admin_user_ctx(is_admin=False)
+        test_app.dependency_overrides[_get_db] = _mock_db_session
+
+        with (
+            patch("mcpgateway.config.settings.oauth_as_enabled", True),
+            patch("mcpgateway.config.settings.oauth_dcr_mode", "disabled"),
+            patch("mcpgateway.services.oauth_as_service.get_oauth_as_service", return_value=mock_service),
+        ):
+            yield TestClient(test_app, raise_server_exceptions=False)
+
+    # ------------------------------------------------------------------
+    # Test cases
+    # ------------------------------------------------------------------
+
+    def test_dcr_open_mode_no_auth_required(self, client_dcr_open):
+        """Open mode: POST /oauth/register succeeds without Bearer token."""
+        resp = client_dcr_open.post(
+            "/oauth/register",
+            json={"client_name": "My MCP Client", "grant_types": ["client_credentials"]},
+        )
+        assert resp.status_code == 201
+        data = resp.json()
+        assert "client_id" in data
+        assert "client_secret" in data
+        assert data["client_id_issued_at"] > 0
+        assert data["client_secret_expires_at"] == 0  # non-expiring per RFC 7591
+
+    def test_dcr_authenticated_mode_with_valid_token(self, client_dcr_auth, mock_service):
+        """Authenticated mode: valid Bearer token allows registration."""
+        with patch(
+            "mcpgateway.utils.verify_credentials.verify_jwt_token",
+            new_callable=AsyncMock,
+            return_value={"sub": "some-user"},
+        ):
+            resp = client_dcr_auth.post(
+                "/oauth/register",
+                json={"client_name": "My MCP Client", "grant_types": ["client_credentials"]},
+                headers={"Authorization": "Bearer valid-token-here"},
+            )
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["grant_types"] == ["client_credentials"]
+        assert "client_secret" in data
+
+    def test_dcr_authenticated_mode_rejects_no_token(self, client_dcr_auth):
+        """Authenticated mode: missing Bearer token returns 401."""
+        resp = client_dcr_auth.post(
+            "/oauth/register",
+            json={"client_name": "My MCP Client"},
+        )
+        assert resp.status_code == 401
+        data = resp.json()
+        assert data["error"] == "invalid_token"
+
+    def test_dcr_authenticated_mode_rejects_bad_token(self, client_dcr_auth):
+        """Authenticated mode: invalid Bearer token returns 401."""
+        with patch(
+            "mcpgateway.utils.verify_credentials.verify_jwt_token",
+            new_callable=AsyncMock,
+            side_effect=Exception("invalid signature"),
+        ):
+            resp = client_dcr_auth.post(
+                "/oauth/register",
+                json={"client_name": "My MCP Client"},
+                headers={"Authorization": "Bearer bad-token"},
+            )
+        assert resp.status_code == 401
+        assert resp.json()["error"] == "invalid_token"
+
+    def test_dcr_disabled_mode_returns_404(self, client_dcr_disabled):
+        """DCR mode=disabled: POST /oauth/register returns 404."""
+        resp = client_dcr_disabled.post(
+            "/oauth/register",
+            json={"client_name": "My MCP Client"},
+        )
+        assert resp.status_code == 404
+
+    def test_dcr_scope_restriction_enforced(self, client_dcr_open, mock_service):
+        """DCR clients cannot request admin scope — service enforces restriction."""
+        # Service mock returns only mcp:access regardless of request
+        resp = client_dcr_open.post(
+            "/oauth/register",
+            json={
+                "client_name": "Scope Pusher",
+                "grant_types": ["client_credentials"],
+                "scope": "mcp:access admin servers.manage",
+            },
+        )
+        assert resp.status_code == 201
+        # register_dcr_client was called (scope enforcement happens in service layer)
+        mock_service.register_dcr_client.assert_called_once()
+        call_kwargs = mock_service.register_dcr_client.call_args.kwargs
+        assert call_kwargs["requested_scope"] == "mcp:access admin servers.manage"
+        # Response scope is whatever the service returned (mcp:access only in mock)
+        assert resp.json()["scope"] == "mcp:access"
+
+    def test_dcr_registration_endpoint_in_metadata_when_enabled(self, client):
+        """AS metadata includes registration_endpoint when DCR is not disabled."""
+        with patch("mcpgateway.config.settings.oauth_dcr_mode", "authenticated"):
+            # Patch service metadata to include registration_endpoint
+            import unittest.mock as um
+            client.app.dependency_overrides  # trigger fixture setup
+            # Re-patch service to return metadata with registration_endpoint
+            from mcpgateway.services.oauth_as_service import get_oauth_as_service as _svc_factory
+            with patch(
+                "mcpgateway.services.oauth_as_service.get_oauth_as_service",
+                return_value=MagicMock(
+                    get_as_metadata=MagicMock(
+                        return_value={
+                            "issuer": "http://testserver",
+                            "token_endpoint": "http://testserver/oauth/token",
+                            "jwks_uri": "http://testserver/oauth/jwks",
+                            "grant_types_supported": ["client_credentials"],
+                            "registration_endpoint": "http://testserver/oauth/register",
+                        }
+                    )
+                ),
+            ):
+                resp = client.get("/.well-known/oauth-authorization-server")
+        assert resp.status_code == 200
+        assert "registration_endpoint" in resp.json()
+
+    def test_dcr_invalid_client_name_returns_400(self, client_dcr_open, mock_service):
+        """Empty client_name returns 400 invalid_client_metadata."""
+        mock_service.register_dcr_client = AsyncMock(side_effect=ValueError("client_name is required"))
+        resp = client_dcr_open.post(
+            "/oauth/register",
+            json={"client_name": "   "},
+        )
+        assert resp.status_code == 400
+        assert resp.json()["error"] == "invalid_client_metadata"

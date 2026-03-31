@@ -560,6 +560,19 @@ class Settings(BaseSettings):
     oauth_rate_limit_per_client: int = Field(default=10, description="OAuth AS requests per minute per client")
     oauth_rate_limit_per_ip: int = Field(default=20, description="OAuth AS requests per minute per IP")
     oauth_rate_limit_global: int = Field(default=100, description="OAuth AS total requests per minute")
+    oauth_dcr_mode: str = Field(
+        default="authenticated",
+        description=(
+            "Dynamic Client Registration mode (RFC 7591). "
+            "'disabled' — POST /oauth/register returns 404. "
+            "'open' — anyone can register without a token. "
+            "'authenticated' — valid Bearer token required to register (default)."
+        ),
+    )
+    oauth_dcr_default_scopes: List[str] = Field(
+        default=["mcp:access"],
+        description="Default scopes granted to clients registered via DCR. Admin scope is never granted via DCR.",
+    )
 
     # Email-Based Authentication
     email_auth_enabled: bool = Field(default=True, description="Enable email-based authentication")

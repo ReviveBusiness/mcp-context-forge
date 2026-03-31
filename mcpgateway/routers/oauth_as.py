@@ -87,6 +87,29 @@ class SecretRotationResponse(BaseModel):
     client_secret: str = Field(..., description="New raw client secret (shown once)")
 
 
+class DCRRegistrationRequest(BaseModel):
+    """RFC 7591 Dynamic Client Registration request body."""
+
+    client_name: str = Field(..., description="Human-readable client name (required)")
+    redirect_uris: List[str] = Field(default_factory=list, description="Redirect URIs (informational for client_credentials clients)")
+    grant_types: List[str] = Field(default=["client_credentials"], description="Requested grant types")
+    token_endpoint_auth_method: str = Field(default="client_secret_basic", description="Token endpoint auth method")
+    scope: Optional[str] = Field(default=None, description="Requested scopes (space-delimited)")
+
+
+class DCRRegistrationResponse(BaseModel):
+    """RFC 7591 ClientInformation response."""
+
+    client_id: str
+    client_secret: str
+    client_id_issued_at: int
+    client_secret_expires_at: int
+    client_name: str
+    grant_types: List[str]
+    token_endpoint_auth_method: str
+    scope: Optional[str] = None
+
+
 class TokenRevokeRequest(BaseModel):
     """Request body for revoking a token by JTI."""
 
@@ -317,6 +340,102 @@ async def oauth_jwks():
         content=jwks,
         headers={"Cache-Control": "max-age=300, no-transform"},
     )
+
+
+@oauth_as_router.post(
+    "/oauth/register",
+    response_model=DCRRegistrationResponse,
+    status_code=201,
+    responses={
+        400: {"model": OAuthErrorResponse},
+        401: {"model": OAuthErrorResponse},
+    },
+    dependencies=[Depends(_require_oauth_as_enabled)],
+)
+async def dcr_register(
+    body: DCRRegistrationRequest,
+    request: Request,
+    db: Session = Depends(_get_db),
+):
+    """RFC 7591 Dynamic Client Registration endpoint.
+
+    Allows MCP clients to self-register as OAuth clients without admin
+    intervention. Behaviour is controlled by ``OAUTH_DCR_MODE``:
+
+    - ``disabled`` — returns 404 (blocked by ``_require_dcr_enabled`` check).
+    - ``open`` — no authentication required; anyone can register.
+    - ``authenticated`` — a valid Bearer token is required (default).
+
+    The server auto-generates ``client_id``. Clients may not supply their own.
+    Scopes are restricted to the DCR default scopes; admin scope is never
+    granted via this endpoint.
+
+    Args:
+        body: RFC 7591 client metadata request.
+        request: FastAPI request (used to extract Bearer token in auth mode).
+        db: Database session.
+
+    Returns:
+        RFC 7591 ClientInformation including ``client_id``, ``client_secret``,
+        ``client_id_issued_at``, and ``client_secret_expires_at``.
+
+    Raises:
+        HTTPException 404: DCR mode is ``disabled``.
+        HTTPException 401: Auth mode and no valid Bearer token supplied.
+        HTTPException 400: Invalid ``client_name`` or unsupported auth method.
+    """
+    # First-Party
+    from mcpgateway.services.oauth_as_service import get_oauth_as_service  # pylint: disable=import-outside-toplevel
+
+    # DCR mode gate
+    dcr_mode = settings.oauth_dcr_mode
+    if dcr_mode == "disabled":
+        raise HTTPException(status_code=404, detail="Not found")
+
+    # Authenticated mode: require a valid Bearer token (any active client or user)
+    if dcr_mode == "authenticated":
+        auth_header = request.headers.get("authorization", "")
+        if not auth_header.lower().startswith("bearer "):
+            return JSONResponse(
+                status_code=401,
+                content={"error": "invalid_token", "error_description": "Bearer token required for client registration"},
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        # Validate token via existing CF JWT verification
+        token = auth_header[7:]
+        try:
+            from mcpgateway.utils.verify_credentials import verify_jwt_token  # pylint: disable=import-outside-toplevel
+
+            await verify_jwt_token(token)
+        except Exception:  # pylint: disable=broad-except
+            return JSONResponse(
+                status_code=401,
+                content={"error": "invalid_token", "error_description": "Invalid or expired Bearer token"},
+                headers={"WWW-Authenticate": "Bearer error=\"invalid_token\""},
+            )
+
+    service = get_oauth_as_service()
+    try:
+        result = await service.register_dcr_client(
+            client_name=body.client_name,
+            grant_types=body.grant_types,
+            token_endpoint_auth_method=body.token_endpoint_auth_method,
+            requested_scope=body.scope,
+            db=db,
+        )
+    except ValueError as exc:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "invalid_client_metadata", "error_description": str(exc)},
+        )
+
+    logger.info(
+        "DCR registration successful: client_id=%s mode=%s",
+        result["client_id"],
+        dcr_mode,
+    )
+
+    return JSONResponse(content=result, status_code=201)
 
 
 # NOTE: /.well-known/oauth-authorization-server (RFC 8414) is defined in
