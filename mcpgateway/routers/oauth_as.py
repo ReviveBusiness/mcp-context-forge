@@ -106,6 +106,7 @@ class DCRRegistrationResponse(BaseModel):
     client_secret_expires_at: int
     client_name: str
     grant_types: List[str]
+    redirect_uris: List[str] = Field(default_factory=list, description="Redirect URIs — echoed from request (empty for client_credentials clients)")
     token_endpoint_auth_method: str
     scope: Optional[str] = None
 
@@ -210,7 +211,7 @@ def _parse_client_credentials(request: Request, client_id_form: Optional[str], c
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="invalid_client",
-        headers={"WWW-Authenticate": "Basic realm=\"oauth\""},
+        headers={"WWW-Authenticate": 'Basic realm="oauth"'},
     )
 
 
@@ -411,7 +412,7 @@ async def dcr_register(
             return JSONResponse(
                 status_code=401,
                 content={"error": "invalid_token", "error_description": "Invalid or expired Bearer token"},
-                headers={"WWW-Authenticate": "Bearer error=\"invalid_token\""},
+                headers={"WWW-Authenticate": 'Bearer error="invalid_token"'},
             )
 
     service = get_oauth_as_service()
@@ -428,6 +429,9 @@ async def dcr_register(
             status_code=400,
             content={"error": "invalid_client_metadata", "error_description": str(exc)},
         )
+
+    # RFC 7591 §3.2: echo redirect_uris from request (empty list for client_credentials clients)
+    result["redirect_uris"] = body.redirect_uris
 
     logger.info(
         "DCR registration successful: client_id=%s mode=%s",

@@ -983,3 +983,36 @@ class TestDCRRegistration:
         data = resp.json()
         assert data["client_id"].startswith("dcr-")
         assert "client_secret" in data
+
+    def test_dcr_response_includes_redirect_uris(self, client_dcr_open, mock_service):
+        """RFC 7591 §3.2 + MCP SDK compat: response always includes redirect_uris array.
+
+        The MCP SDK (Claude Code) Zod-validates the DCR response and requires
+        redirect_uris to be an array. When the client omits redirect_uris (valid
+        for client_credentials), the server must echo an empty array.
+        """
+        resp = client_dcr_open.post(
+            "/oauth/register",
+            json={
+                "client_name": "claude-code",
+                "grant_types": ["client_credentials"],
+            },
+        )
+        assert resp.status_code == 201
+        data = resp.json()
+        assert "redirect_uris" in data
+        assert isinstance(data["redirect_uris"], list)
+
+    def test_dcr_response_echoes_redirect_uris_when_provided(self, client_dcr_open, mock_service):
+        """RFC 7591 §3.2: redirect_uris from request are echoed in response."""
+        resp = client_dcr_open.post(
+            "/oauth/register",
+            json={
+                "client_name": "my-client",
+                "grant_types": ["client_credentials"],
+                "redirect_uris": ["https://example.com/callback"],
+            },
+        )
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["redirect_uris"] == ["https://example.com/callback"]
