@@ -23,7 +23,6 @@ from sqlalchemy.orm import Session
 from mcpgateway.routers.oauth_as import oauth_as_router
 from mcpgateway.services.oauth_as_service import InvalidClientError, InvalidScopeError
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -933,9 +932,11 @@ class TestDCRRegistration:
         with patch("mcpgateway.config.settings.oauth_dcr_mode", "authenticated"):
             # Patch service metadata to include registration_endpoint
             import unittest.mock as um
+
             client.app.dependency_overrides  # trigger fixture setup
             # Re-patch service to return metadata with registration_endpoint
             from mcpgateway.services.oauth_as_service import get_oauth_as_service as _svc_factory
+
             with patch(
                 "mcpgateway.services.oauth_as_service.get_oauth_as_service",
                 return_value=MagicMock(
@@ -963,3 +964,22 @@ class TestDCRRegistration:
         )
         assert resp.status_code == 400
         assert resp.json()["error"] == "invalid_client_metadata"
+
+    def test_dcr_none_auth_method_accepted(self, client_dcr_open, mock_service):
+        """token_endpoint_auth_method=none is accepted (MCP public client flow).
+
+        RFC 7591 §2: 'none' is valid for public clients. The service normalises
+        it to client_secret_basic internally so a client_secret is still issued.
+        """
+        resp = client_dcr_open.post(
+            "/oauth/register",
+            json={
+                "client_name": "claude-code",
+                "grant_types": ["client_credentials"],
+                "token_endpoint_auth_method": "none",
+            },
+        )
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["client_id"].startswith("dcr-")
+        assert "client_secret" in data

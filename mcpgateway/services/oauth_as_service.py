@@ -135,10 +135,7 @@ class OAuthASService:
         public_key_path = settings.oauth_rs256_public_key_path
 
         if not private_key_path or not public_key_path:
-            raise RuntimeError(
-                "OAuth AS is enabled but RSA key paths are not configured. "
-                "Set OAUTH_RS256_PRIVATE_KEY_PATH and OAUTH_RS256_PUBLIC_KEY_PATH."
-            )
+            raise RuntimeError("OAuth AS is enabled but RSA key paths are not configured. " "Set OAUTH_RS256_PRIVATE_KEY_PATH and OAUTH_RS256_PUBLIC_KEY_PATH.")
 
         try:
             with open(private_key_path, "rb") as f:
@@ -196,11 +193,7 @@ class OAuthASService:
             InvalidClientError: If the client is not found, inactive, or the
                 secret does not match (including grace-period check).
         """
-        client: Optional[OAuthASClient] = (
-            db.query(OAuthASClient)
-            .filter(OAuthASClient.client_id == client_id, OAuthASClient.is_active.is_(True))
-            .first()
-        )
+        client: Optional[OAuthASClient] = db.query(OAuthASClient).filter(OAuthASClient.client_id == client_id, OAuthASClient.is_active.is_(True)).first()
 
         if client is None:
             logger.warning("OAuth AS client authentication failed: client_id=%s not found or inactive", client_id)
@@ -415,9 +408,7 @@ class OAuthASService:
             return True
 
         # Default deny-list expiry: max TTL + 5 min buffer
-        deny_until = datetime.now(timezone.utc) + timedelta(
-            seconds=settings.oauth_token_max_ttl + 300
-        )
+        deny_until = datetime.now(timezone.utc) + timedelta(seconds=settings.oauth_token_max_ttl + 300)
 
         revoked = OAuthASRevokedToken(
             jti=jti,
@@ -444,6 +435,7 @@ class OAuthASService:
         close_db = False
         if db is None:
             from mcpgateway.db import SessionLocal  # pylint: disable=import-outside-toplevel
+
             db = SessionLocal()
             close_db = True
         try:
@@ -580,11 +572,14 @@ class OAuthASService:
         if not client_name or not client_name.strip():
             raise ValueError("client_name is required")
 
-        supported_auth_methods = {"client_secret_basic", "client_secret_post"}
+        supported_auth_methods = {"client_secret_basic", "client_secret_post", "none"}
         if token_endpoint_auth_method not in supported_auth_methods:
-            raise ValueError(
-                f"token_endpoint_auth_method must be one of: {', '.join(sorted(supported_auth_methods))}"
-            )
+            raise ValueError(f"token_endpoint_auth_method must be one of: {', '.join(sorted(supported_auth_methods))}")
+        # RFC 7591: "none" = public client (no client authentication). We still
+        # issue a client_secret so the client can use client_credentials grant.
+        # Normalise to client_secret_basic for token endpoint auth.
+        if token_endpoint_auth_method == "none":
+            token_endpoint_auth_method = "client_secret_basic"
 
         # Scope intersection: DCR clients get default scopes only, never admin
         default_scopes: List[str] = list(settings.oauth_dcr_default_scopes)
@@ -599,6 +594,7 @@ class OAuthASService:
 
         # Auto-generate a stable, URL-safe client_id
         import uuid  # pylint: disable=import-outside-toplevel
+
         client_id = f"dcr-{uuid.uuid4().hex[:12]}"
 
         # Delegate to existing register_client (handles hashing, DB write, logging)
@@ -708,9 +704,7 @@ class OAuthASService:
         Returns:
             Dict with client_id and new secret, or None if client not found.
         """
-        client: Optional[OAuthASClient] = (
-            db.query(OAuthASClient).filter(OAuthASClient.client_id == client_id).first()
-        )
+        client: Optional[OAuthASClient] = db.query(OAuthASClient).filter(OAuthASClient.client_id == client_id).first()
         if client is None:
             return None
 
@@ -766,9 +760,7 @@ class OAuthASService:
         Returns:
             Client dict with secret masked, or ``None`` if not found.
         """
-        client: Optional[OAuthASClient] = (
-            db.query(OAuthASClient).filter(OAuthASClient.client_id == client_id).first()
-        )
+        client: Optional[OAuthASClient] = db.query(OAuthASClient).filter(OAuthASClient.client_id == client_id).first()
         if client is None:
             return None
         return self._client_to_dict(client)
@@ -795,9 +787,7 @@ class OAuthASService:
         Returns:
             ``True`` if the client was deactivated, ``False`` if not found.
         """
-        client: Optional[OAuthASClient] = (
-            db.query(OAuthASClient).filter(OAuthASClient.client_id == client_id).first()
-        )
+        client: Optional[OAuthASClient] = db.query(OAuthASClient).filter(OAuthASClient.client_id == client_id).first()
         if client is None:
             return False
         client.is_active = False
@@ -821,14 +811,11 @@ class OAuthASService:
         close_db = False
         if db is None:
             from mcpgateway.db import SessionLocal  # pylint: disable=import-outside-toplevel
+
             db = SessionLocal()
             close_db = True
         try:
-            client: Optional[OAuthASClient] = (
-                db.query(OAuthASClient)
-                .filter(OAuthASClient.client_id == client_id, OAuthASClient.is_active.is_(True))
-                .first()
-            )
+            client: Optional[OAuthASClient] = db.query(OAuthASClient).filter(OAuthASClient.client_id == client_id, OAuthASClient.is_active.is_(True)).first()
             if client is None:
                 return None
             return self._client_to_dict(client)
